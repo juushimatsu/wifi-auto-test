@@ -4,7 +4,7 @@
 
 ## Требования
 
-- Orange Pi Zero 2W (или любой Linux SBC) с 2 Wi-Fi адаптерами:
+- Linux SBC или ПК с 2 Wi-Fi адаптерами:
   - Один в monitor mode для сканирования/атаки
   - Один в AP mode для web-панели управления
 - Python 3.10+
@@ -13,23 +13,19 @@
 ## Установка
 
 ```bash
-# На Windows-машине разработчика: скачать зависимости для offline-установки
-pip download -r requirements.txt -d ./offline_packages/
+git clone https://github.com/juushimatsu/wifi-auto-test.git
+cd wifi-auto-test
+pip install -r requirements.txt
 
-# Перенести проект и offline_packages на Orange Pi
-scp -r wifi_auto_test/ offline_packages/ orangepi@<ip>:~/wifi-auto-test/
-
-# На Orange Pi
-pip install --no-index --find-links ./offline_packages/ -r requirements.txt
-sudo python3 main.py --install-deps --test-interface wlp2s0f0u6mon --ap-interface wlp2s0f0u7
+sudo python3 main.py --install-deps --test-interface <monitor-interface> --ap-interface <ap-interface>
 ```
 
 ## Запуск
 
 ```bash
 sudo python3 main.py \
-  --test-interface wlp2s0f0u6mon \
-  --ap-interface wlp2s0f0u7 \
+  --test-interface <monitor-interface> \
+  --ap-interface <ap-interface> \
   --ap-ssid "WiFiTestAP" \
   --ap-password "test1234"
 ```
