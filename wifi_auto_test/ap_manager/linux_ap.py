@@ -17,6 +17,21 @@ class LinuxAPManager(IAPManager):
         self._proc_dnsmasq: subprocess.Popen | None = None
         self._interface: str | None = None
 
+    def _check_ap_support(self, interface: str) -> bool:
+        """Проверить поддержку AP mode на интерфейсе."""
+        result = subprocess.run(
+            ["sudo", "iw", "list"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and "AP" in result.stdout:
+            return True
+        # Fallback: проверим через iwconfig
+        result = subprocess.run(
+            ["sudo", "iwconfig", interface],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0
+
     def setup_ap(
         self,
         interface: str,
@@ -28,21 +43,18 @@ class LinuxAPManager(IAPManager):
         self._interface = interface
         self._log(f"[*] Настройка AP на {interface}: {ssid}")
 
-        # Разблокировать WiFi (на случай rfkill)
+        # Проверить поддержку AP
+        if not self._check_ap_support(interface):
+            self._log(f"[!] Интерфейс {interface} возможно не поддерживает AP mode")
+
+        # Разблокировать WiFi
         subprocess.run(["sudo", "rfkill", "unblock", "wifi"], capture_output=True)
 
-        # Полностью отключить NetworkManager
+        # Остановить NetworkManager и wpa_supplicant
         subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], capture_output=True)
         time.sleep(0.5)
-
-        # Убить wpa_supplicant
-        subprocess.run(
-            ["sudo", "killall", "-q", "wpa_supplicant"],
-            capture_output=True,
-        )
+        subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], capture_output=True)
         time.sleep(0.5)
-
-        # Убить старые hostapd и dnsmasq
         subprocess.run(["sudo", "killall", "-q", "hostapd"], capture_output=True)
         subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
         time.sleep(0.5)
@@ -61,8 +73,9 @@ class LinuxAPManager(IAPManager):
             ["sudo", "ip", "link", "set", interface, "up"],
             capture_output=True,
         )
+        time.sleep(0.5)
 
-        # hostapd конфиг с driver=nl80211
+        # hostapd конфиг с driver=nl80211 и country_code
         hostapd_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
         hostapd_cfg.write(
             f"interface={interface}\n"
@@ -70,12 +83,14 @@ class LinuxAPManager(IAPManager):
             f"ssid={ssid}\n"
             f"hw_mode=g\n"
             f"channel=7\n"
+            f"country_code=US\n"
             f"wpa=2\n"
             f"wpa_passphrase={password}\n"
             f"wpa_key_mgmt=WPA-PSK\n"
             f"rsn_pairwise=CCMP\n"
             f"auth_algs=1\n"
             f"ignore_broadcast_ssid=0\n"
+            f"ctrl_interface=/var/run/hostapd\n"
         )
         hostapd_cfg.close()
         self._hostapd_conf = hostapd_cfg.name
@@ -101,16 +116,16 @@ class LinuxAPManager(IAPManager):
 
         # Запуск hostapd
         self._proc_hostapd = subprocess.Popen(
-            ["sudo", "hostapd", self._hostapd_conf],
+            ["sudo", "hostapd", "-d", self._hostapd_conf],
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
         time.sleep(2)
         ret = self._proc_hostapd.poll()
         if ret is not None:
-            stdout, stderr = self._proc_hostapd.communicate()
-            err_text = stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()
-            self._log(f"[!] hostapd вышел сразу (code={ret}), stderr: {err_text}")
+            stdout, _ = self._proc_hostapd.communicate()
+            err_text = stdout.decode('utf-8', errors='replace').strip() if stdout else "no output"
+            self._log(f"[!] hostapd вышел сразу (code={ret}): {err_text[:500]}")
             return False
         self._log("[+] hostapd запущен")
 
@@ -124,8 +139,8 @@ class LinuxAPManager(IAPManager):
         ret = self._proc_dnsmasq.poll()
         if ret is not None:
             stdout, stderr = self._proc_dnsmasq.communicate()
-            err_text = stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()
-            self._log(f"[!] dnsmasq вышел сразу (code={ret}), stderr: {err_text}")
+            err_text = stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip() if stdout else "no output"
+            self._log(f"[!] dnsmasq вышел сразу (code={ret}): {err_text[:500]}")
             return False
         self._log("[+] dnsmasq запущен")
 

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import threading
 import time
@@ -22,55 +23,113 @@ class WashScanner(IScanner):
         self._scan_interval = scan_interval
         self._buffer: List[WiFiNetwork] = []
         self._buffer_lock = threading.Lock()
-        self._mon_interface = f"{interface}mon"
-        self._mon_created = False
 
-    def _nm_release(self) -> None:
-        # Отключить интерфейс от NetworkManager
-        subprocess.run(
-            ["sudo", "nmcli", "device", "disconnect", self._interface],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "nmcli", "device", "set", self._interface, "managed", "no"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "systemctl", "stop", "NetworkManager"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "killall", "-q", "wpa_supplicant"],
-            capture_output=True,
-        )
-        time.sleep(1)
+    def _find_interfaces(self) -> List[str]:
+        """Найти все WiFi интерфейсы через sysfs."""
+        result = []
+        try:
+            for entry in os.listdir("/sys/class/net"):
+                if os.path.exists(f"/sys/class/net/{entry}/wireless"):
+                    result.append(entry)
+        except OSError:
+            pass
+        return result
 
-    def _ensure_monitor_mode(self) -> bool:
-        self._nm_release()
-
-        # Check if interface already in monitor mode
+    def _get_interface_mode(self, iface: str) -> str:
+        """Определить режим интерфейса."""
+        # Try iw first
         result = subprocess.run(
-            ["sudo", "iw", "dev", self._interface, "info"],
+            ["sudo", "iw", "dev", iface, "info"],
             capture_output=True, text=True,
         )
-        if "type monitor" in result.stdout:
-            return True
+        if result.returncode == 0:
+            for line in result.stdout.split("\n"):
+                if "type" in line:
+                    return line.strip().split("type")[-1].strip()
+        # Fallback to iwconfig
+        result = subprocess.run(
+            ["sudo", "iwconfig", iface],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split("\n"):
+                if "Mode:" in line:
+                    mode = line.split("Mode:")[1].split()[0]
+                    return mode.lower()
+        # Try sysfs
+        try:
+            with open(f"/sys/class/net/{iface}/type", "r") as f:
+                t = f.read().strip()
+                if t == "803":
+                    return "monitor"
+                if t == "1":
+                    return "managed"
+        except OSError:
+            pass
+        return "unknown"
 
-        # Try airmon-ng
+    def _find_monitor_interface(self) -> Optional[str]:
+        """Найти интерфейс в monitor mode."""
+        for iface in self._find_interfaces():
+            mode = self._get_interface_mode(iface)
+            if mode == "monitor":
+                return iface
+        return None
+
+    def _try_wash(self, iface: str) -> bool:
+        """Проверить что wash работает на интерфейсе (без таймаута)."""
+        proc = subprocess.Popen(
+            ["sudo", "wash", "-i", iface],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(2)
+        ret = proc.poll()
+        if ret is not None:
+            # Если вышел сразу - значит не работает
+            stdout, stderr = proc.communicate()
+            err_text = stderr.decode('utf-8', errors='replace').strip()
+            print(f"[DEBUG] wash -i {iface} вышел сразу (code={ret}), stderr: {err_text[:200]}")
+            return False
+        # Если всё ещё работает - значит работает
+        proc.terminate()
+        proc.wait(timeout=2)
+        print(f"[DEBUG] wash -i {iface} работает!")
+        return True
+
+    def _ensure_monitor_mode(self) -> Optional[str]:
+        """Вернуть имя интерфейса для wash."""
+        # 0. Пробуем исходный интерфейс напрямую
+        print(f"[DEBUG] Проверка wash на {self._interface}")
+        if self._try_wash(self._interface):
+            return self._interface
+
+        # 1. Проверить исходный интерфейс
+        mode = self._get_interface_mode(self._interface)
+        if mode == "monitor":
+            return self._interface
+
+        # 2. Искать любой monitor-интерфейс
+        existing_mon = self._find_monitor_interface()
+        if existing_mon:
+            print(f"[DEBUG] Найден monitor-интерфейс: {existing_mon}")
+            return existing_mon
+
+        # 3. Попытка через airmon-ng
+        print(f"[DEBUG] Попытка airmon-ng start {self._interface}")
         subprocess.run(
             ["sudo", "airmon-ng", "start", self._interface],
             capture_output=True,
         )
         time.sleep(1)
-        result = subprocess.run(
-            ["sudo", "iw", "dev", self._mon_interface, "info"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 and "type monitor" in result.stdout:
-            self._mon_created = True
-            return True
 
-        # Fallback: direct iw set type monitor
+        # Проверить снова
+        existing_mon = self._find_monitor_interface()
+        if existing_mon:
+            return existing_mon
+
+        # 4. Fallback: iw set type monitor
+        print(f"[DEBUG] Попытка iw set type monitor {self._interface}")
         subprocess.run(
             ["sudo", "ip", "link", "set", self._interface, "down"],
             capture_output=True,
@@ -83,25 +142,18 @@ class WashScanner(IScanner):
             ["sudo", "ip", "link", "set", self._interface, "up"],
             capture_output=True,
         )
-        result = subprocess.run(
-            ["sudo", "iw", "dev", self._interface, "info"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 and "type monitor" in result.stdout:
-            return True
-        return False
+        time.sleep(0.5)
 
-    def _cleanup_monitor_mode(self) -> None:
-        if self._mon_created:
-            subprocess.run(
-                ["sudo", "airmon-ng", "stop", self._mon_interface],
-                capture_output=True,
-            )
-            self._mon_created = False
+        mode = self._get_interface_mode(self._interface)
+        if mode == "monitor":
+            return self._interface
+
+        print(f"[!] Не удалось подготовить {self._interface} (текущий режим: {mode})")
+        return None
 
     def scan(self) -> List[WiFiNetwork]:
-        if not self._ensure_monitor_mode():
-            print(f"[!] Не удалось перевести {self._interface} в monitor mode")
+        iface = self._ensure_monitor_mode()
+        if not iface:
             return []
 
         self._buffer.clear()
@@ -120,8 +172,8 @@ class WashScanner(IScanner):
         def _on_stderr(line: str) -> None:
             pass
 
-        iface = self._mon_interface if self._mon_created else self._interface
         command = ["sudo", "wash", "-i", iface, "-f"]
+        print(f"[DEBUG] Запуск wash на {iface}")
         rc = self._runner.run(
             command=command,
             timeout=self._scan_interval,
