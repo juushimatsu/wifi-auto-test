@@ -14,6 +14,7 @@ class LinuxAPManager(IAPManager):
         self._dnsmasq_conf: str = ""
         self._proc_hostapd: subprocess.Popen | None = None
         self._proc_dnsmasq: subprocess.Popen | None = None
+        self._interface: str | None = None
 
     def setup_ap(
         self,
@@ -23,6 +24,8 @@ class LinuxAPManager(IAPManager):
         ip_cidr: str,
         dhcp_range: str,
     ) -> bool:
+        self._interface = interface
+        self._interface = interface
         self._log(f"[*] Настройка AP на {interface}: {ssid}")
 
         # Остановить NetworkManager и wpa_supplicant на интерфейсе
@@ -95,6 +98,14 @@ class LinuxAPManager(IAPManager):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        import time
+        time.sleep(0.5)
+        ret = self._proc_hostapd.poll()
+        if ret is not None:
+            stdout, stderr = self._proc_hostapd.communicate()
+            self._log(f"[!] hostapd вышел сразу (code={ret}), stderr: {stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()}")
+            return False
+        self._log("[+] hostapd запущен")
 
         # Запуск dnsmasq
         self._proc_dnsmasq = subprocess.Popen(
@@ -102,6 +113,13 @@ class LinuxAPManager(IAPManager):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        time.sleep(0.5)
+        ret = self._proc_dnsmasq.poll()
+        if ret is not None:
+            stdout, stderr = self._proc_dnsmasq.communicate()
+            self._log(f"[!] dnsmasq вышел сразу (code={ret}), stderr: {stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()}")
+            return False
+        self._log("[+] dnsmasq запущен")
 
         self._log(f"[+] AP {ssid} запущена на {interface} ({ip_addr})")
         return True
@@ -131,8 +149,9 @@ class LinuxAPManager(IAPManager):
             if f and os.path.exists(f):
                 os.unlink(f)
 
+        iface = self._interface or "wlan1"
         subprocess.run(
-            ["sudo", "nmcli", "device", "set", "wlan1", "managed", "yes"],
+            ["sudo", "nmcli", "device", "set", iface, "managed", "yes"],
             capture_output=True,
         )
         self._log("[+] AP остановлена")

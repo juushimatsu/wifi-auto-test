@@ -25,6 +25,7 @@ class FileWebSocketLogger(ILogger):
 
     def _write(self, level: str, msg: str) -> None:
         line = f"[{datetime.now().isoformat()}] [{level}] {msg}"
+        print(line)
         with self._lock:
             with open(self._filepath, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
