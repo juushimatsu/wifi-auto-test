@@ -1,0 +1,187 @@
+/* WiFi Auto Test - Minimal CSS, no external dependencies */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #0f1117;
+  color: #e0e6ed;
+  line-height: 1.5;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+h1 { font-size: 1.5rem; font-weight: 600; }
+h2 { font-size: 1.1rem; margin: 20px 0 10px; color: #aab2bd; }
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #555;
+  transition: background 0.3s;
+}
+.indicator.running { background: #28a745; box-shadow: 0 0 6px #28a745; }
+.indicator.paused { background: #ffc107; }
+.indicator.stopped { background: #dc3545; }
+
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  background: #2d333b;
+  color: #e0e6ed;
+  transition: background 0.2s;
+}
+.btn:hover { background: #373e47; }
+.btn-start { background: #238636; }
+.btn-start:hover { background: #2ea043; }
+.btn-stop { background: #da3633; }
+.btn-stop:hover { background: #f85149; }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #58a6ff;
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: #8b949e;
+  margin-top: 4px;
+}
+
+.current {
+  margin-bottom: 20px;
+}
+
+.network-card {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.network-card .placeholder {
+  color: #8b949e;
+}
+
+.networks table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.networks th, .networks td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #21262d;
+}
+
+.networks th {
+  background: #0d1117;
+  color: #8b949e;
+  font-weight: 600;
+}
+
+.networks tr:hover { background: #1c2128; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.badge.success { background: #23863633; color: #3fb950; }
+.badge.pending { background: #f0883e33; color: #f0883e; }
+.badge.retry { background: #58a6ff33; color: #58a6ff; }
+
+.btn-prio {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  background: #1f6feb;
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  cursor: pointer;
+}
+.btn-prio:hover { background: #388bfd; }
+
+.logs {
+  margin-top: 20px;
+}
+
+#log-container {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 12px;
+  height: 280px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line {
+  padding: 1px 0;
+  color: #c9d1d9;
+}
+.log-line.debug { color: #8b949e; }
+.log-line.warning { color: #f0883e; }
+.log-line.error { color: #f85149; }
+
+@media (max-width: 700px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  header { flex-direction: column; align-items: flex-start; }
+  .networks table { font-size: 0.78rem; }
+  .networks th, .networks td { padding: 6px 8px; }
+}

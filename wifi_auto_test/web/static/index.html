@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WiFi Auto Test</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>WiFi Auto Test</h1>
+      <div class="status-bar">
+        <span class="indicator" id="status-indicator"></span>
+        <span id="status-text">Загрузка...</span>
+      </div>
+    </header>
+
+    <section class="controls">
+      <button id="btn-start" class="btn btn-start">▶ Пуск</button>
+      <button id="btn-stop" class="btn btn-stop">⏸ Стоп</button>
+      <button id="btn-refresh" class="btn">🔄 Обновить</button>
+    </section>
+
+    <section class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-scanned">0</div>
+        <div class="stat-label">Сканировано</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-success">0</div>
+        <div class="stat-label">Успех</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-failure">0</div>
+        <div class="stat-label">Неудача</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-queue">0</div>
+        <div class="stat-label">В очереди</div>
+      </div>
+    </section>
+
+    <section class="current">
+      <h2>Текущая сеть</h2>
+      <div id="current-network" class="network-card">
+        <p class="placeholder">Нет активного теста</p>
+      </div>
+    </section>
+
+    <section class="networks">
+      <h2>Сети</h2>
+      <table id="networks-table">
+        <thead>
+          <tr>
+            <th>SSID</th>
+            <th>BSSID</th>
+            <th>Канал</th>
+            <th>Сигнал</th>
+            <th>Статус</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody id="networks-tbody"></tbody>
+      </table>
+    </section>
+
+    <section class="logs">
+      <h2>Логи</h2>
+      <div id="log-container"></div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
