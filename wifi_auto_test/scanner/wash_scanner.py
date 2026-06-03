@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -7,6 +8,16 @@ from typing import Callable, List, Optional
 from wifi_auto_test.core.models import WiFiNetwork
 from wifi_auto_test.utils.process_runner import ProcessRunner
 from .interfaces import IScanner, INetworkParser
+
+
+def _which(name: str) -> str:
+    """Найти бинарник, используя полный PATH."""
+    path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    for p in path_env.split(os.pathsep) + ["/usr/sbin", "/sbin", "/usr/local/sbin"]:
+        full = os.path.join(p, name)
+        if os.path.isfile(full) and os.access(full, os.X_OK):
+            return full
+    return shutil.which(name) or name
 
 
 class WashScanner(IScanner):
@@ -36,10 +47,11 @@ class WashScanner(IScanner):
         return result
 
     def _get_interface_mode(self, iface: str) -> str:
-        """Определить режим интерфейса."""
+        """Определить режим интерфейса через iw или iwconfig."""
         # Try iw first
+        iw = _which("iw")
         result = subprocess.run(
-            ["sudo", "iw", "dev", iface, "info"],
+            ["sudo", iw, "dev", iface, "info"],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
@@ -47,8 +59,9 @@ class WashScanner(IScanner):
                 if "type" in line:
                     return line.strip().split("type")[-1].strip()
         # Fallback to iwconfig
+        iwconfig = _which("iwconfig")
         result = subprocess.run(
-            ["sudo", "iwconfig", iface],
+            ["sudo", iwconfig, iface],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
@@ -77,21 +90,20 @@ class WashScanner(IScanner):
         return None
 
     def _try_wash(self, iface: str) -> bool:
-        """Проверить что wash работает на интерфейсе (без таймаута)."""
+        """Проверить что wash работает на интерфейсе."""
+        wash = _which("wash")
         proc = subprocess.Popen(
-            ["sudo", "wash", "-i", iface],
+            ["sudo", wash, "-i", iface],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         time.sleep(2)
         ret = proc.poll()
         if ret is not None:
-            # Если вышел сразу - значит не работает
             stdout, stderr = proc.communicate()
             err_text = stderr.decode('utf-8', errors='replace').strip()
             print(f"[DEBUG] wash -i {iface} вышел сразу (code={ret}), stderr: {err_text[:200]}")
             return False
-        # Если всё ещё работает - значит работает
         proc.terminate()
         proc.wait(timeout=2)
         print(f"[DEBUG] wash -i {iface} работает!")
@@ -116,26 +128,27 @@ class WashScanner(IScanner):
             return existing_mon
 
         # 3. Попытка через airmon-ng
+        airmon = _which("airmon-ng")
         print(f"[DEBUG] Попытка airmon-ng start {self._interface}")
         subprocess.run(
-            ["sudo", "airmon-ng", "start", self._interface],
+            ["sudo", airmon, "start", self._interface],
             capture_output=True,
         )
         time.sleep(1)
 
-        # Проверить снова
         existing_mon = self._find_monitor_interface()
         if existing_mon:
             return existing_mon
 
         # 4. Fallback: iw set type monitor
+        iw = _which("iw")
         print(f"[DEBUG] Попытка iw set type monitor {self._interface}")
         subprocess.run(
             ["sudo", "ip", "link", "set", self._interface, "down"],
             capture_output=True,
         )
         subprocess.run(
-            ["sudo", "iw", "dev", self._interface, "set", "type", "monitor"],
+            ["sudo", iw, "dev", self._interface, "set", "type", "monitor"],
             capture_output=True,
         )
         subprocess.run(
@@ -172,7 +185,8 @@ class WashScanner(IScanner):
         def _on_stderr(line: str) -> None:
             pass
 
-        command = ["sudo", "wash", "-i", iface, "-f"]
+        wash = _which("wash")
+        command = ["sudo", wash, "-i", iface, "-f"]
         print(f"[DEBUG] Запуск wash на {iface}")
         rc = self._runner.run(
             command=command,

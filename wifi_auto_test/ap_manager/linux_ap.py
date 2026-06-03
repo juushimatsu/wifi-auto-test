@@ -8,6 +8,16 @@ from pathlib import Path
 from .interfaces import IAPManager
 
 
+def _which(name: str) -> str:
+    """Найти бинарник, используя полный PATH."""
+    path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    for p in path_env.split(os.pathsep) + ["/usr/sbin", "/sbin", "/usr/local/sbin"]:
+        full = os.path.join(p, name)
+        if os.path.isfile(full) and os.access(full, os.X_OK):
+            return full
+    return shutil.which(name) or name
+
+
 class LinuxAPManager(IAPManager):
     def __init__(self, logger=None):
         self._log = logger or (lambda x: None)
@@ -16,23 +26,55 @@ class LinuxAPManager(IAPManager):
         self._proc_hostapd: subprocess.Popen | None = None
         self._proc_dnsmasq: subprocess.Popen | None = None
         self._interface: str | None = None
+        self._nm_con_name: str = ""
 
-    def _check_ap_support(self, interface: str) -> bool:
-        """Проверить поддержку AP mode на интерфейсе."""
+    def _can_nm_hotspot(self) -> bool:
+        """Проверить доступность nmcli dev wifi hotspot."""
+        nmcli = _which("nmcli")
         result = subprocess.run(
-            ["sudo", "iw", "list"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 and "AP" in result.stdout:
-            return True
-        # Fallback: проверим через iwconfig
-        result = subprocess.run(
-            ["sudo", "iwconfig", interface],
-            capture_output=True, text=True,
+            ["sudo", nmcli, "dev", "wifi", "hotspot", "--help"],
+            capture_output=True,
         )
         return result.returncode == 0
 
-    def setup_ap(
+    def _setup_ap_nm(self, interface: str, ssid: str, password: str, ip_cidr: str) -> bool:
+        """Настроить AP через NetworkManager hotspot."""
+        nmcli = _which("nmcli")
+        con_name = f"wifi-auto-test-{ssid}"
+        self._nm_con_name = con_name
+        self._log(f"[*] Настройка AP через nmcli hotspot на {interface}")
+
+        # Убить старые hostapd и dnsmasq
+        subprocess.run(["sudo", "killall", "-q", "hostapd"], capture_output=True)
+        subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
+
+        # Удалить старое соединение если есть
+        subprocess.run(
+            ["sudo", nmcli, "con", "del", con_name],
+            capture_output=True,
+        )
+
+        # Создать hotspot
+        result = subprocess.run(
+            [
+                "sudo", nmcli, "dev", "wifi", "hotspot",
+                "--ifname", interface,
+                "--con-name", con_name,
+                "--ssid", ssid,
+                "--password", password,
+                "--hidden", "no",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            self._log(f"[!] nmcli hotspot failed: {result.stderr.strip()[:200]}")
+            return False
+
+        self._log(f"[+] AP {ssid} запущена через nmcli на {interface}")
+        return True
+
+    def _setup_ap_hostapd(
         self,
         interface: str,
         ssid: str,
@@ -40,15 +82,12 @@ class LinuxAPManager(IAPManager):
         ip_cidr: str,
         dhcp_range: str,
     ) -> bool:
-        self._interface = interface
-        self._log(f"[*] Настройка AP на {interface}: {ssid}")
-
-        # Проверить поддержку AP
-        if not self._check_ap_support(interface):
-            self._log(f"[!] Интерфейс {interface} возможно не поддерживает AP mode")
+        """Настроить AP через hostapd+dnsmasq (fallback)."""
+        self._log(f"[*] Настройка AP через hostapd на {interface}: {ssid}")
 
         # Разблокировать WiFi
-        subprocess.run(["sudo", "rfkill", "unblock", "wifi"], capture_output=True)
+        rfkill = _which("rfkill")
+        subprocess.run(["sudo", rfkill, "unblock", "wifi"], capture_output=True)
 
         # Остановить NetworkManager и wpa_supplicant
         subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], capture_output=True)
@@ -115,8 +154,9 @@ class LinuxAPManager(IAPManager):
         self._dnsmasq_conf = dnsmasq_cfg.name
 
         # Запуск hostapd
+        hostapd = _which("hostapd")
         self._proc_hostapd = subprocess.Popen(
-            ["sudo", "hostapd", "-d", self._hostapd_conf],
+            ["sudo", hostapd, "-d", self._hostapd_conf],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
@@ -125,13 +165,16 @@ class LinuxAPManager(IAPManager):
         if ret is not None:
             stdout, _ = self._proc_hostapd.communicate()
             err_text = stdout.decode('utf-8', errors='replace').strip() if stdout else "no output"
-            self._log(f"[!] hostapd вышел сразу (code={ret}): {err_text[:500]}")
+            self._log(f"[!] hostapd вышел сразу (code={ret}):")
+            for line in err_text.split("\n")[-20:]:
+                self._log(f"    {line}")
             return False
         self._log("[+] hostapd запущен")
 
         # Запуск dnsmasq
+        dnsmasq = _which("dnsmasq")
         self._proc_dnsmasq = subprocess.Popen(
-            ["sudo", "dnsmasq", "-C", self._dnsmasq_conf],
+            ["sudo", dnsmasq, "-C", self._dnsmasq_conf],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -147,8 +190,36 @@ class LinuxAPManager(IAPManager):
         self._log(f"[+] AP {ssid} запущена на {interface} ({ip_addr})")
         return True
 
+    def setup_ap(
+        self,
+        interface: str,
+        ssid: str,
+        password: str,
+        ip_cidr: str,
+        dhcp_range: str,
+    ) -> bool:
+        self._interface = interface
+
+        # Пробуем nmcli hotspot первым (работает с Realtek)
+        if self._can_nm_hotspot():
+            if self._setup_ap_nm(interface, ssid, password, ip_cidr):
+                return True
+            self._log("[!] nmcli hotspot не сработал, пробуем hostapd")
+
+        # Fallback на hostapd
+        return self._setup_ap_hostapd(interface, ssid, password, ip_cidr, dhcp_range)
+
     def stop_ap(self) -> bool:
         self._log("[*] Остановка AP")
+
+        if self._nm_con_name:
+            nmcli = _which("nmcli")
+            subprocess.run(
+                ["sudo", nmcli, "con", "del", self._nm_con_name],
+                capture_output=True,
+            )
+            self._nm_con_name = ""
+
         if self._proc_hostapd:
             self._proc_hostapd.terminate()
             try:
