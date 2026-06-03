@@ -1,194 +1,17 @@
 import os
-import shutil
 import subprocess
-import tempfile
 import time
-from pathlib import Path
 
 from .interfaces import IAPManager
 
 
-def _which(name: str) -> str:
-    """Найти бинарник, используя полный PATH."""
-    path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    for p in path_env.split(os.pathsep) + ["/usr/sbin", "/sbin", "/usr/local/sbin"]:
-        full = os.path.join(p, name)
-        if os.path.isfile(full) and os.access(full, os.X_OK):
-            return full
-    return shutil.which(name) or name
-
-
 class LinuxAPManager(IAPManager):
+    """AP через NetworkManager — не трогает другие интерфейсы."""
+
     def __init__(self, logger=None):
         self._log = logger or (lambda x: None)
-        self._hostapd_conf: str = ""
-        self._dnsmasq_conf: str = ""
-        self._proc_hostapd: subprocess.Popen | None = None
-        self._proc_dnsmasq: subprocess.Popen | None = None
         self._interface: str | None = None
-        self._nm_con_name: str = ""
-
-    def _can_nm_hotspot(self) -> bool:
-        """Проверить доступность nmcli dev wifi hotspot."""
-        nmcli = _which("nmcli")
-        result = subprocess.run(
-            ["sudo", nmcli, "dev", "wifi", "hotspot", "--help"],
-            capture_output=True,
-        )
-        return result.returncode == 0
-
-    def _setup_ap_nm(self, interface: str, ssid: str, password: str, ip_cidr: str) -> bool:
-        """Настроить AP через NetworkManager hotspot."""
-        nmcli = _which("nmcli")
-        con_name = f"wifi-auto-test-{ssid}"
-        self._nm_con_name = con_name
-        self._log(f"[*] Настройка AP через nmcli hotspot на {interface}")
-
-        # Убить старые hostapd и dnsmasq
-        subprocess.run(["sudo", "killall", "-q", "hostapd"], capture_output=True)
-        subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
-
-        # Удалить старое соединение если есть
-        subprocess.run(
-            ["sudo", nmcli, "con", "del", con_name],
-            capture_output=True,
-        )
-
-        # Создать hotspot
-        result = subprocess.run(
-            [
-                "sudo", nmcli, "dev", "wifi", "hotspot",
-                "--ifname", interface,
-                "--con-name", con_name,
-                "--ssid", ssid,
-                "--password", password,
-                "--hidden", "no",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            self._log(f"[!] nmcli hotspot failed: {result.stderr.strip()[:200]}")
-            return False
-
-        self._log(f"[+] AP {ssid} запущена через nmcli на {interface}")
-        return True
-
-    def _setup_ap_hostapd(
-        self,
-        interface: str,
-        ssid: str,
-        password: str,
-        ip_cidr: str,
-        dhcp_range: str,
-    ) -> bool:
-        """Настроить AP через hostapd+dnsmasq (fallback)."""
-        self._log(f"[*] Настройка AP через hostapd на {interface}: {ssid}")
-
-        # Разблокировать WiFi
-        rfkill = _which("rfkill")
-        subprocess.run(["sudo", rfkill, "unblock", "wifi"], capture_output=True)
-
-        # Остановить NetworkManager и wpa_supplicant
-        subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], capture_output=True)
-        time.sleep(0.5)
-        subprocess.run(["sudo", "killall", "-q", "wpa_supplicant"], capture_output=True)
-        time.sleep(0.5)
-        subprocess.run(["sudo", "killall", "-q", "hostapd"], capture_output=True)
-        subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
-        time.sleep(0.5)
-
-        # Назначить IP
-        ip_addr = ip_cidr.split("/")[0]
-        subprocess.run(
-            ["sudo", "ip", "addr", "flush", "dev", interface],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "ip", "addr", "add", ip_cidr, "dev", interface],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "ip", "link", "set", interface, "up"],
-            capture_output=True,
-        )
-        time.sleep(0.5)
-
-        # hostapd конфиг с driver=nl80211 и country_code
-        hostapd_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
-        hostapd_cfg.write(
-            f"interface={interface}\n"
-            f"driver=nl80211\n"
-            f"ssid={ssid}\n"
-            f"hw_mode=g\n"
-            f"channel=7\n"
-            f"country_code=US\n"
-            f"wpa=2\n"
-            f"wpa_passphrase={password}\n"
-            f"wpa_key_mgmt=WPA-PSK\n"
-            f"rsn_pairwise=CCMP\n"
-            f"auth_algs=1\n"
-            f"ignore_broadcast_ssid=0\n"
-            f"ctrl_interface=/var/run/hostapd\n"
-        )
-        hostapd_cfg.close()
-        self._hostapd_conf = hostapd_cfg.name
-
-        # dnsmasq конфиг
-        dnsmasq_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
-        range_parts = dhcp_range.split(",")
-        start_ip = range_parts[0]
-        end_ip = range_parts[1] if len(range_parts) > 1 else range_parts[0]
-        netmask = range_parts[2] if len(range_parts) > 2 else "255.255.255.0"
-        lease = range_parts[3] if len(range_parts) > 3 else "12h"
-        dnsmasq_cfg.write(
-            f"interface={interface}\n"
-            f"dhcp-range={start_ip},{end_ip},{netmask},{lease}\n"
-            f"dhcp-option=3,{ip_addr}\n"
-            f"dhcp-option=6,{ip_addr}\n"
-            f"server=8.8.8.8\n"
-            f"listen-address={ip_addr}\n"
-            f"bind-interfaces\n"
-        )
-        dnsmasq_cfg.close()
-        self._dnsmasq_conf = dnsmasq_cfg.name
-
-        # Запуск hostapd
-        hostapd = _which("hostapd")
-        self._proc_hostapd = subprocess.Popen(
-            ["sudo", hostapd, "-d", self._hostapd_conf],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        time.sleep(2)
-        ret = self._proc_hostapd.poll()
-        if ret is not None:
-            stdout, _ = self._proc_hostapd.communicate()
-            err_text = stdout.decode('utf-8', errors='replace').strip() if stdout else "no output"
-            self._log(f"[!] hostapd вышел сразу (code={ret}):")
-            for line in err_text.split("\n")[-20:]:
-                self._log(f"    {line}")
-            return False
-        self._log("[+] hostapd запущен")
-
-        # Запуск dnsmasq
-        dnsmasq = _which("dnsmasq")
-        self._proc_dnsmasq = subprocess.Popen(
-            ["sudo", dnsmasq, "-C", self._dnsmasq_conf],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        time.sleep(0.5)
-        ret = self._proc_dnsmasq.poll()
-        if ret is not None:
-            stdout, stderr = self._proc_dnsmasq.communicate()
-            err_text = stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip() if stdout else "no output"
-            self._log(f"[!] dnsmasq вышел сразу (code={ret}): {err_text[:500]}")
-            return False
-        self._log("[+] dnsmasq запущен")
-
-        self._log(f"[+] AP {ssid} запущена на {interface} ({ip_addr})")
-        return True
+        self._con_name: str = ""
 
     def setup_ap(
         self,
@@ -199,61 +22,70 @@ class LinuxAPManager(IAPManager):
         dhcp_range: str,
     ) -> bool:
         self._interface = interface
+        self._con_name = f"wifi-auto-test-{ssid.replace(' ', '-')[:20]}"
+        self._log(f"[*] Настройка AP через nmcli на {interface}: {ssid}")
 
-        # Пробуем nmcli hotspot первым (работает с Realtek)
-        if self._can_nm_hotspot():
-            if self._setup_ap_nm(interface, ssid, password, ip_cidr):
-                return True
-            self._log("[!] nmcli hotspot не сработал, пробуем hostapd")
+        # Удалить старое соединение
+        subprocess.run(
+            ["sudo", "nmcli", "connection", "delete", self._con_name],
+            capture_output=True,
+        )
 
-        # Fallback на hostapd
-        return self._setup_ap_hostapd(interface, ssid, password, ip_cidr, dhcp_range)
+        # Создать AP-соединение
+        result = subprocess.run(
+            [
+                "sudo", "nmcli", "connection", "add",
+                "type", "wifi",
+                "ifname", interface,
+                "con-name", self._con_name,
+                "autoconnect", "no",
+                "ssid", ssid,
+                "802-11-wireless.mode", "ap",
+                "802-11-wireless.band", "bg",
+                "802-11-wireless-security.key-mgmt", "wpa-psk",
+                "802-11-wireless-security.psk", password,
+                "ipv4.method", "shared",
+            ],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            self._log(f"[!] nmcli add failed: {result.stderr.strip()[:300]}")
+            return False
+
+        # Активировать
+        result = subprocess.run(
+            ["sudo", "nmcli", "connection", "up", self._con_name],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            self._log(f"[!] nmcli up failed: {result.stderr.strip()[:300]}")
+            return False
+
+        self._log(f"[+] AP {ssid} запущена через nmcli на {interface}")
+        return True
 
     def stop_ap(self) -> bool:
         self._log("[*] Остановка AP")
-
-        if self._nm_con_name:
-            nmcli = _which("nmcli")
+        if self._con_name:
             subprocess.run(
-                ["sudo", nmcli, "con", "del", self._nm_con_name],
+                ["sudo", "nmcli", "connection", "down", self._con_name],
                 capture_output=True,
             )
-            self._nm_con_name = ""
-
-        if self._proc_hostapd:
-            self._proc_hostapd.terminate()
-            try:
-                self._proc_hostapd.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._proc_hostapd.kill()
-            self._proc_hostapd = None
-
-        if self._proc_dnsmasq:
-            self._proc_dnsmasq.terminate()
-            try:
-                self._proc_dnsmasq.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._proc_dnsmasq.kill()
-            self._proc_dnsmasq = None
-
-        subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
-
-        for f in [self._hostapd_conf, self._dnsmasq_conf]:
-            if f and os.path.exists(f):
-                os.unlink(f)
-
-        # Восстановить NetworkManager
-        subprocess.run(["sudo", "systemctl", "start", "NetworkManager"], capture_output=True)
-
+            subprocess.run(
+                ["sudo", "nmcli", "connection", "delete", self._con_name],
+                capture_output=True,
+            )
+            self._con_name = ""
         self._log("[+] AP остановлена")
         return True
 
     def is_client_connected(self) -> bool:
-        lease_file = "/var/lib/misc/dnsmasq.leases"
-        if not os.path.exists(lease_file):
+        if not self._con_name:
             return False
-        try:
-            with open(lease_file, "r") as f:
-                return bool(f.read().strip())
-        except OSError:
-            return False
+        result = subprocess.run(
+            ["sudo", "nmcli", "connection", "show", "--active"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return self._con_name in result.stdout
+        return False
