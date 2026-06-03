@@ -31,54 +31,42 @@ class LinuxAPManager(IAPManager):
         # Разблокировать WiFi (на случай rfkill)
         subprocess.run(["sudo", "rfkill", "unblock", "wifi"], capture_output=True)
 
-        # Полностью освободить интерфейс от NetworkManager/wpa_supplicant
-        subprocess.run(
-            ["sudo", "nmcli", "device", "disconnect", interface],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "nmcli", "device", "set", interface, "managed", "no"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "systemctl", "stop", f"wpa_supplicant@{interface}.service"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["sudo", "systemctl", "stop", "wpa_supplicant"],
-            capture_output=True,
-        )
+        # Полностью отключить NetworkManager
+        subprocess.run(["sudo", "systemctl", "stop", "NetworkManager"], capture_output=True)
+        time.sleep(0.5)
+
+        # Убить wpa_supplicant
         subprocess.run(
             ["sudo", "killall", "-q", "wpa_supplicant"],
             capture_output=True,
         )
+        time.sleep(0.5)
 
-        # Убить старые hostapd и dnsmasq на случай зависших процессов
+        # Убить старые hostapd и dnsmasq
         subprocess.run(["sudo", "killall", "-q", "hostapd"], capture_output=True)
         subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
+        time.sleep(0.5)
 
         # Назначить IP
         ip_addr = ip_cidr.split("/")[0]
-        prefix = ip_cidr.split("/")[1]
         subprocess.run(
             ["sudo", "ip", "addr", "flush", "dev", interface],
             capture_output=True,
         )
         subprocess.run(
             ["sudo", "ip", "addr", "add", ip_cidr, "dev", interface],
-            check=True,
             capture_output=True,
         )
         subprocess.run(
             ["sudo", "ip", "link", "set", interface, "up"],
-            check=True,
             capture_output=True,
         )
 
-        # hostapd конфиг
+        # hostapd конфиг с driver=nl80211
         hostapd_cfg = tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False)
         hostapd_cfg.write(
             f"interface={interface}\n"
+            f"driver=nl80211\n"
             f"ssid={ssid}\n"
             f"hw_mode=g\n"
             f"channel=7\n"
@@ -117,7 +105,7 @@ class LinuxAPManager(IAPManager):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        time.sleep(1)
+        time.sleep(2)
         ret = self._proc_hostapd.poll()
         if ret is not None:
             stdout, stderr = self._proc_hostapd.communicate()
@@ -162,23 +150,19 @@ class LinuxAPManager(IAPManager):
                 self._proc_dnsmasq.kill()
             self._proc_dnsmasq = None
 
-        # Очистка dnsmasq артефактов
         subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
 
         for f in [self._hostapd_conf, self._dnsmasq_conf]:
             if f and os.path.exists(f):
                 os.unlink(f)
 
-        iface = self._interface or "wlan1"
-        subprocess.run(
-            ["sudo", "nmcli", "device", "set", iface, "managed", "yes"],
-            capture_output=True,
-        )
+        # Восстановить NetworkManager
+        subprocess.run(["sudo", "systemctl", "start", "NetworkManager"], capture_output=True)
+
         self._log("[+] AP остановлена")
         return True
 
     def is_client_connected(self) -> bool:
-        # Простая проверка: смотрим dhcp leases dnsmasq
         lease_file = "/var/lib/misc/dnsmasq.leases"
         if not os.path.exists(lease_file):
             return False
