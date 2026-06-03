@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from .interfaces import IAPManager
@@ -25,18 +26,36 @@ class LinuxAPManager(IAPManager):
         dhcp_range: str,
     ) -> bool:
         self._interface = interface
-        self._interface = interface
         self._log(f"[*] Настройка AP на {interface}: {ssid}")
 
-        # Остановить NetworkManager и wpa_supplicant на интерфейсе
+        # Разблокировать WiFi (на случай rfkill)
+        subprocess.run(["sudo", "rfkill", "unblock", "wifi"], capture_output=True)
+
+        # Полностью освободить интерфейс от NetworkManager/wpa_supplicant
         subprocess.run(
-            ["sudo", "systemctl", "stop", "wpa_supplicant"],
+            ["sudo", "nmcli", "device", "disconnect", interface],
             capture_output=True,
         )
         subprocess.run(
             ["sudo", "nmcli", "device", "set", interface, "managed", "no"],
             capture_output=True,
         )
+        subprocess.run(
+            ["sudo", "systemctl", "stop", f"wpa_supplicant@{interface}.service"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["sudo", "systemctl", "stop", "wpa_supplicant"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["sudo", "killall", "-q", "wpa_supplicant"],
+            capture_output=True,
+        )
+
+        # Убить старые hostapd и dnsmasq на случай зависших процессов
+        subprocess.run(["sudo", "killall", "-q", "hostapd"], capture_output=True)
+        subprocess.run(["sudo", "killall", "-q", "dnsmasq"], capture_output=True)
 
         # Назначить IP
         ip_addr = ip_cidr.split("/")[0]
@@ -98,12 +117,12 @@ class LinuxAPManager(IAPManager):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        import time
-        time.sleep(0.5)
+        time.sleep(1)
         ret = self._proc_hostapd.poll()
         if ret is not None:
             stdout, stderr = self._proc_hostapd.communicate()
-            self._log(f"[!] hostapd вышел сразу (code={ret}), stderr: {stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()}")
+            err_text = stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()
+            self._log(f"[!] hostapd вышел сразу (code={ret}), stderr: {err_text}")
             return False
         self._log("[+] hostapd запущен")
 
@@ -117,7 +136,8 @@ class LinuxAPManager(IAPManager):
         ret = self._proc_dnsmasq.poll()
         if ret is not None:
             stdout, stderr = self._proc_dnsmasq.communicate()
-            self._log(f"[!] dnsmasq вышел сразу (code={ret}), stderr: {stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()}")
+            err_text = stderr.decode('utf-8', errors='replace').strip() or stdout.decode('utf-8', errors='replace').strip()
+            self._log(f"[!] dnsmasq вышел сразу (code={ret}), stderr: {err_text}")
             return False
         self._log("[+] dnsmasq запущен")
 
