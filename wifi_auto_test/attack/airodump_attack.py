@@ -84,6 +84,15 @@ class AirodumpAttack(IAttackEngine):
             if os.path.getsize(pcap_file) == 0:
                 pcap_file = None
 
+        # Clean up capture files on failure — only keep successful captures
+        if status != TestStatus.SUCCESS:
+            for f in glob.glob(prefix + "*"):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            pcap_file = None
+
         return TestResult(
             network=network,
             status=status,

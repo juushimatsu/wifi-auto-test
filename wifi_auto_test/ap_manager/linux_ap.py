@@ -414,11 +414,34 @@ class LinuxAPManager(IAPManager):
     def is_client_connected(self) -> bool:
         if not self._interface:
             return False
-        # Проверяем station count через hostapd_cli или iw
+        # 1. Try iw station dump (works for both hostapd and wpa_supplicant)
         result = subprocess.run(
             ["sudo", "iw", "dev", self._interface, "station", "dump"],
             capture_output=True, text=True,
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout.strip():
             return len(result.stdout.strip().splitlines()) > 0
+        # 2. Fallback: hostapd_cli list_sta
+        result = subprocess.run(
+            ["sudo", "hostapd_cli", "-i", self._interface, "list_sta"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+        # 3. Fallback: wpa_cli all_sta
+        result = subprocess.run(
+            ["sudo", "wpa_cli", "-i", self._interface, "all_sta"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip() and "dot11RSNAStatsSTAAddress" in result.stdout:
+            return True
+        # 4. Last resort: check ARP table for stations on AP subnet
+        result = subprocess.run(
+            ["sudo", "ip", "neigh", "show", "dev", self._interface],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            for line in result.stdout.strip().splitlines():
+                if "REACHABLE" in line or "STALE" in line:
+                    return True
         return False
