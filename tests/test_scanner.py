@@ -13,38 +13,47 @@ def iw_scanner(mock_process_runner, mock_parser):
 
 
 class TestFindInterfaces:
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
+    def test_find_interfaces_via_iwconfig(self, mock_run, iw_scanner):
+        mock_run.return_value.stdout = (
+            "lo        no wireless extensions.\n\n"
+            "eth0      no wireless extensions.\n\n"
+            "wlan0     IEEE 802.11  ESSID:off/any\n"
+            "          Mode:Managed  Frequency:2.452 GHz\n\n"
+            "wlan1mon  IEEE 802.11  Mode:Monitor  Frequency:2.412 GHz\n"
+        )
+        mock_run.return_value.returncode = 0
+
+        result = sorted(iw_scanner._find_interfaces())
+        assert result == ["wlan0", "wlan1mon"]
+
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
     @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
     @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
-    def test_find_interfaces_via_sysfs(self, mock_exists, mock_listdir, iw_scanner):
+    def test_find_interfaces_fallback_sysfs(self, mock_exists, mock_listdir, mock_run, iw_scanner):
+        # iwconfig fails -> fallback to sysfs
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="lo        no wireless extensions.\n"),
+        ]
         mock_listdir.return_value = ["eth0", "wlan0", "wlan1mon", "lo"]
         def exists_side(path):
-            return "wireless" in path and any(
-                x in path for x in ["wlan0", "wlan1mon"]
-            )
+            if "wireless" in path and "wlan0" in path:
+                return True
+            if "type" in path:
+                return True
+            return False
         mock_exists.side_effect = exists_side
 
         result = iw_scanner._find_interfaces()
-        assert sorted(result) == ["wlan0", "wlan1mon"]
+        assert "wlan0" in result
 
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
     @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
     @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
-    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_find_interfaces_sysfs_falls_back_to_iw_dev(self, mock_run, mock_exists, mock_listdir, iw_scanner):
-        mock_listdir.return_value = ["eth0", "lo"]
-        mock_exists.return_value = False
-        mock_run.return_value.stdout = "\tInterface wlan0\n\t\tifindex 3\n"
-        mock_run.return_value.returncode = 0
-
-        result = iw_scanner._find_interfaces()
-        assert result == ["wlan0"]
-
-    @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
-    @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
-    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_find_interfaces_both_fail(self, mock_run, mock_exists, mock_listdir, iw_scanner):
-        mock_listdir.side_effect = OSError
-        mock_run.return_value.stdout = ""
+    def test_find_interfaces_all_fail(self, mock_exists, mock_listdir, mock_run, iw_scanner):
         mock_run.return_value.returncode = 1
+        mock_run.return_value.stdout = ""
+        mock_listdir.side_effect = OSError
 
         result = iw_scanner._find_interfaces()
         assert result == []

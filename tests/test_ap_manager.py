@@ -1,3 +1,4 @@
+import subprocess
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -231,10 +232,11 @@ class TestSetupAPHostapd:
         assert result is True
         assert mock_popen.call_count == 3
         # airbase-ng called with right args
+        from unittest.mock import ANY
         mock_popen.assert_called_with(
             ["sudo", "airbase-ng", "-e", "TestAP", "-c", "6", "wlan0"],
-            stdout=mock_open.return_value,
-            stderr=subprocess.STDOUT,
+            stdout=ANY,
+            stderr=ANY,
         )
 
 

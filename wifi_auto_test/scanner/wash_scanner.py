@@ -28,24 +28,33 @@ class IwScanner(IScanner):
         self._buffer_lock = threading.Lock()
 
     def _find_interfaces(self) -> List[str]:
-        result = []
-        # Find wireless interfaces via sysfs (works on most systems including Orange Pi)
+        result = set()
+        # Method 1: iwconfig — catches ALL wireless interfaces including airmon-ng
+        try:
+            out = subprocess.run(
+                ["iwconfig"], capture_output=True, text=True
+            ).stdout
+            for line in out.split("\n"):
+                m = re.match(r"^(\S+)\s+IEEE 802\.11", line)
+                if m:
+                    result.add(m.group(1))
+        except Exception:
+            pass
+        # Method 2: sysfs (supplement iwconfig, not replace)
         try:
             for entry in os.listdir("/sys/class/net"):
-                # Regular wireless interfaces have wireless/ subdir
                 if os.path.exists(f"/sys/class/net/{entry}/wireless"):
-                    result.append(entry)
-                # Monitor interfaces (airmon-ng) may only have type 803
+                    result.add(entry)
                 elif os.path.exists(f"/sys/class/net/{entry}/type"):
                     try:
                         with open(f"/sys/class/net/{entry}/type", "r") as f:
                             if f.read().strip() == "803":
-                                result.append(entry)
+                                result.add(entry)
                     except OSError:
                         pass
         except OSError:
             pass
-        # Fallback: iw dev
+        # Method 3: iw dev (last resort)
         if not result:
             try:
                 out = subprocess.run(
@@ -53,10 +62,10 @@ class IwScanner(IScanner):
                 ).stdout
                 for line in out.split("\n"):
                     if line.strip().startswith("Interface "):
-                        result.append(line.strip().split(" ")[1])
+                        result.add(line.strip().split(" ")[1])
             except Exception:
                 pass
-        return result
+        return list(result)
 
     def _get_interface_mode(self, iface: str) -> str:
         # Primary: iwconfig (works on Orange Pi)
@@ -64,27 +73,36 @@ class IwScanner(IScanner):
             ["sudo", "iwconfig", iface],
             capture_output=True, text=True,
         )
-        if result.returncode == 0:
+        if result.returncode == 0 and result.stdout:
             for line in result.stdout.split("\n"):
                 if "Mode:" in line:
-                    return line.split("Mode:")[1].split()[0].lower()
+                    mode = line.split("Mode:")[1].split()[0].lower()
+                    print(f"[DEBUG] {iface} mode via iwconfig: {mode}")
+                    return mode
+            print(f"[DEBUG] iwconfig stdout for {iface} has no 'Mode:': {result.stdout[:200]}")
+        else:
+            print(f"[DEBUG] iwconfig {iface} failed: rc={result.returncode} stdout={result.stdout[:100]} stderr={result.stderr[:100]}")
         # Fallback: iw dev <iface> info
         result2 = subprocess.run(
             ["sudo", "iw", "dev", iface, "info"],
             capture_output=True, text=True,
         )
-        if result2.returncode == 0:
+        if result2.returncode == 0 and result2.stdout:
             for line in result2.stdout.split("\n"):
                 if "type" in line.lower():
-                    return line.strip().rsplit(" ", 1)[-1].lower()
+                    mode = line.strip().rsplit(" ", 1)[-1].lower()
+                    print(f"[DEBUG] {iface} mode via iw: {mode}")
+                    return mode
         # sysfs fallback
         try:
             with open(f"/sys/class/net/{iface}/type", "r") as f:
                 t = f.read().strip()
                 if t == "803":
+                    print(f"[DEBUG] {iface} mode via sysfs: monitor")
                     return "monitor"
         except OSError:
             pass
+        print(f"[DEBUG] {iface} mode: unknown")
         return "unknown"
 
     def _find_monitor_interface(self) -> Optional[str]:
@@ -102,17 +120,21 @@ class IwScanner(IScanner):
 
     def _ensure_monitor(self) -> Optional[str]:
         # 1. Исходный интерфейс уже monitor?
-        if self._get_interface_mode(self._interface) == "monitor":
+        mode = self._get_interface_mode(self._interface)
+        print(f"[DEBUG] _ensure_monitor: {self._interface} mode={mode}")
+        if mode == "monitor":
             self._bring_up(self._interface)
             return self._interface
 
         # 2. Найти любой monitor
         mon = self._find_monitor_interface()
+        print(f"[DEBUG] _find_monitor_interface returned: {mon}")
         if mon:
             self._bring_up(mon)
             return mon
 
         # 3. Перевести через airmon-ng
+        print(f"[DEBUG] Trying airmon-ng start {self._interface}")
         subprocess.run(
             ["sudo", "airmon-ng", "start", self._interface],
             capture_output=True,
@@ -120,6 +142,7 @@ class IwScanner(IScanner):
         time.sleep(1)
 
         mon = self._find_monitor_interface()
+        print(f"[DEBUG] After airmon-ng, monitor interface: {mon}")
         if mon:
             return mon
 
@@ -129,9 +152,17 @@ class IwScanner(IScanner):
         subprocess.run(["sudo", "ip", "link", "set", self._interface, "up"], capture_output=True)
         time.sleep(0.5)
 
-        if self._get_interface_mode(self._interface) == "monitor":
+        mode = self._get_interface_mode(self._interface)
+        print(f"[DEBUG] After iw set type monitor, mode={mode}")
+        if mode == "monitor":
             return self._interface
 
+        # 5. Emergency fallback: если интерфейс существует в sysfs, использовать напрямую
+        if os.path.exists(f"/sys/class/net/{self._interface}"):
+            print(f"[DEBUG] Emergency fallback: using {self._interface} directly (exists in sysfs)")
+            return self._interface
+
+        print(f"[DEBUG] _ensure_monitor: giving up, no monitor interface found")
         return None
 
     def _parse_iw_scan(self, raw: str) -> List[WiFiNetwork]:
