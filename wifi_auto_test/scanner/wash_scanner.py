@@ -174,6 +174,60 @@ class IwScanner(IScanner):
             ))
         return networks
 
+    def _parse_iwlist_scan(self, raw: str) -> List[WiFiNetwork]:
+        """Парсинг вывода `iwlist <iface> scan` — fallback для драйверов без nl80211."""
+        networks = []
+        current = {}
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.startswith("Cell "):
+                if current and "bssid" in current:
+                    networks.append(WiFiNetwork(
+                        bssid=current.get("bssid", ""),
+                        ssid=current.get("ssid", ""),
+                        channel=int(current.get("channel", 0)),
+                        signal_dbm=int(current.get("signal", -100)),
+                        security=current.get("security", "UNKNOWN"),
+                    ))
+                m = re.search(r"Address: ([0-9A-Fa-f:]{17})", line)
+                if m:
+                    current = {"bssid": m.group(1).upper()}
+            elif line.startswith("ESSID:"):
+                m = re.search(r'ESSID:"(.*?)"', line)
+                if m:
+                    current["ssid"] = m.group(1)
+            elif "Signal level=" in line:
+                # Signal level=-36 dBm  or  Quality=70/70  Signal level=-36 dBm
+                m = re.search(r"Signal level=(-?\d+) dBm", line)
+                if m:
+                    current["signal"] = int(m.group(1))
+                else:
+                    m = re.search(r"Signal level=(\d+)/(\d+)", line)
+                    if m:
+                        num, den = int(m.group(1)), int(m.group(2))
+                        current["signal"] = int((num / den) * 100 - 100) if den else -100
+            elif "Frequency:" in line:
+                m = re.search(r"\(Channel (\d+)\)", line)
+                if m:
+                    current["channel"] = int(m.group(1))
+            elif "Encryption key:on" in line or "Encryption key: on" in line:
+                current["security"] = "WEP"  # default; upgraded below
+            elif "Encryption key:off" in line or "Encryption key: off" in line:
+                current["security"] = "OPEN"
+            elif "WPA2" in line or "IEEE 802.11i" in line:
+                current["security"] = "WPA2"
+            elif "WPA" in line and "WPA2" not in line:
+                current["security"] = "WPA"
+        if current and "bssid" in current:
+            networks.append(WiFiNetwork(
+                bssid=current.get("bssid", ""),
+                ssid=current.get("ssid", ""),
+                channel=int(current.get("channel", 0)),
+                signal_dbm=int(current.get("signal", -100)),
+                security=current.get("security", "UNKNOWN"),
+            ))
+        return networks
+
     def scan(self) -> List[WiFiNetwork]:
         iface = self._ensure_monitor()
         if not iface:
@@ -198,7 +252,20 @@ class IwScanner(IScanner):
                     timeout=self._scan_interval,
                 )
         if result.returncode != 0:
-            print(f"[!] iw scan failed: {result.stderr[:200]}")
+            err = result.stderr.strip()
+            # Fallback: iwlist scan для драйверов без nl80211 (например Realtek)
+            if "operation not supported" in err.lower() or "-95" in err:
+                result2 = subprocess.run(
+                    ["sudo", "iwlist", iface, "scan"],
+                    capture_output=True, text=True,
+                    timeout=self._scan_interval,
+                )
+                if result2.returncode == 0:
+                    networks = self._parse_iwlist_scan(result2.stdout)
+                    print(f"[DEBUG] Найдено сетей через iwlist: {len(networks)}")
+                    return networks
+                err = result2.stderr.strip() or err
+            print(f"[!] iw scan failed: {err[:200]}")
             return []
 
         networks = self._parse_iw_scan(result.stdout)

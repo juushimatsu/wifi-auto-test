@@ -114,38 +114,47 @@ class LinuxAPManager(IAPManager):
             capture_output=True,
         )
 
-        # Сохранить hostapd.conf
-        conf_path = "/tmp/hostapd-wifi-auto-test.conf"
-        with open(conf_path, "w") as f:
-            f.write(
-                f"interface={interface}\n"
-                f"driver=nl80211\n"
-                f"ssid={ssid}\n"
-                f"hw_mode=g\n"
-                f"channel=6\n"
-                f"wpa=2\n"
-                f"wpa_passphrase={password}\n"
-                f"wpa_key_mgmt=WPA-PSK\n"
-                f"rsn_pairwise=CCMP\n"
-                f"auth_algs=1\n"
-                f"ignore_broadcast_ssid=0\n"
-            )
+        def _try_hostapd(driver: str) -> tuple[bool, int | None]:
+            self._log(f"[*] Пробуем hostapd с driver={driver}...")
+            conf_path = "/tmp/hostapd-wifi-auto-test.conf"
+            with open(conf_path, "w") as f:
+                f.write(
+                    f"interface={interface}\n"
+                    f"driver={driver}\n"
+                    f"ssid={ssid}\n"
+                    f"hw_mode=g\n"
+                    f"channel=6\n"
+                    f"wpa=2\n"
+                    f"wpa_passphrase={password}\n"
+                    f"wpa_key_mgmt=WPA-PSK\n"
+                    f"rsn_pairwise=CCMP\n"
+                    f"auth_algs=1\n"
+                    f"ignore_broadcast_ssid=0\n"
+                )
 
-        # Запустить hostapd
-        log_path = "/tmp/hostapd-wifi-auto-test.log"
-        with open(log_path, "w") as logf:
-            proc = subprocess.Popen(
-                ["sudo", "hostapd", "-B", conf_path],
-                stdout=logf,
-                stderr=subprocess.STDOUT,
-            )
-        time.sleep(1)
-        if proc.poll() is not None:
-            with open(log_path, "r") as f:
-                err = f.read().strip()
-            self._log(f"[!] hostapd failed to start: {err[:500]}")
+            log_path = f"/tmp/hostapd-wifi-auto-test-{driver}.log"
+            with open(log_path, "w") as logf:
+                proc = subprocess.Popen(
+                    ["sudo", "hostapd", "-B", conf_path],
+                    stdout=logf,
+                    stderr=subprocess.STDOUT,
+                )
+            time.sleep(1.5)
+            if proc.poll() is not None:
+                with open(log_path, "r") as f:
+                    err = f.read().strip()
+                self._log(f"[!] hostapd driver={driver} failed: {err[:500]}")
+                return False, None
+            return True, proc.pid
+
+        for drv in ("nl80211", "wext"):
+            ok, pid = _try_hostapd(drv)
+            if ok and pid:
+                self._hostapd_pid = pid
+                break
+        else:
+            self._log("[!] hostapd не запустился ни с одним драйвером")
             return False
-        self._hostapd_pid = proc.pid
 
         # dnsmasq
         dhcp_start, dhcp_end = dhcp_range.split(",", 1)

@@ -260,6 +260,147 @@ class TestScan:
         captured = capsys.readouterr()
         assert "iw scan failed" in captured.out
 
+    @patch.object(IwScanner, "_ensure_monitor")
+    @patch.object(IwScanner, "_bring_up")
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
+    def test_scan_iwlist_fallback_on_eopnotsupp(self, mock_run, mock_up, mock_ensure, iw_scanner):
+        mock_ensure.return_value = "wlan1mon"
+        # first call: iw scan fails with EOPNOTSUPP
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = "command failed: Operation not supported (-95)"
+        # second call: iwlist scan succeeds
+        success = MagicMock()
+        success.returncode = 0
+        success.stdout = (
+            "Cell 01 - Address: 00:11:22:33:44:55\n"
+            "\tESSID:\"FallbackNet\"\n"
+            "\tFrequency:2.437 GHz (Channel 6)\n"
+            "\tQuality=70/70  Signal level=-30 dBm\n"
+            "\tEncryption key:on\n"
+            "\tWPA2\n"
+        )
+        mock_run.side_effect = [fail, success]
+
+        result = iw_scanner.scan()
+        assert len(result) == 1
+        assert result[0].ssid == "FallbackNet"
+        assert result[0].bssid == "00:11:22:33:44:55"
+        assert result[0].channel == 6
+        assert result[0].signal_dbm == -30
+        assert result[0].security == "WPA2"
+        mock_run.assert_any_call(
+            ["sudo", "iwlist", "wlan1mon", "scan"],
+            capture_output=True, text=True, timeout=5,
+        )
+
+    @patch.object(IwScanner, "_ensure_monitor")
+    @patch.object(IwScanner, "_bring_up")
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
+    def test_scan_iwlist_fallback_on_lowercase_eopnotsupp(self, mock_run, mock_up, mock_ensure, iw_scanner):
+        mock_ensure.return_value = "wlan1mon"
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = "command failed: operation not supported"
+        success = MagicMock()
+        success.returncode = 0
+        success.stdout = (
+            "Cell 01 - Address: AA:BB:CC:DD:EE:FF\n"
+            "\tESSID:\"OpenNet\"\n"
+            "\tFrequency:2.412 GHz (Channel 1)\n"
+            "\tQuality=50/70  Signal level=-50 dBm\n"
+            "\tEncryption key:off\n"
+        )
+        mock_run.side_effect = [fail, success]
+
+        result = iw_scanner.scan()
+        assert len(result) == 1
+        assert result[0].ssid == "OpenNet"
+        assert result[0].security == "OPEN"
+
+    @patch.object(IwScanner, "_ensure_monitor")
+    @patch.object(IwScanner, "_bring_up")
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
+    def test_scan_iwlist_fallback_fails_returns_empty(self, mock_run, mock_up, mock_ensure, iw_scanner):
+        mock_ensure.return_value = "wlan1mon"
+        fail1 = MagicMock()
+        fail1.returncode = 1
+        fail1.stderr = "command failed: Operation not supported (-95)"
+        fail2 = MagicMock()
+        fail2.returncode = 1
+        fail2.stderr = "interface has no scan results"
+        mock_run.side_effect = [fail1, fail2]
+
+        result = iw_scanner.scan()
+        assert result == []
+
+
+class TestParseIwlistScan:
+    def test_parse_single_network_wpa2(self, iw_scanner):
+        raw = (
+            "Cell 01 - Address: 00:11:22:33:44:55\n"
+            "\tESSID:\"TestNet\"\n"
+            "\tFrequency:2.437 GHz (Channel 6)\n"
+            "\tQuality=70/70  Signal level=-40 dBm\n"
+            "\tEncryption key:on\n"
+            "\tIE: IEEE 802.11i/WPA2 Version 1\n"
+        )
+        nets = iw_scanner._parse_iwlist_scan(raw)
+        assert len(nets) == 1
+        assert nets[0].ssid == "TestNet"
+        assert nets[0].bssid == "00:11:22:33:44:55"
+        assert nets[0].channel == 6
+        assert nets[0].signal_dbm == -40
+        assert nets[0].security == "WPA2"
+
+    def test_parse_multiple_networks(self, iw_scanner):
+        raw = (
+            "Cell 01 - Address: 00:11:22:33:44:01\n"
+            "\tESSID:\"Net1\"\n"
+            "\tFrequency:2.412 GHz (Channel 1)\n"
+            "\tQuality=60/70  Signal level=-50 dBm\n"
+            "\tEncryption key:on\n"
+            "\tWPA Version 1\n"
+            "Cell 02 - Address: 00:11:22:33:44:02\n"
+            "\tESSID:\"Net2\"\n"
+            "\tFrequency:2.452 GHz (Channel 11)\n"
+            "\tQuality=70/70  Signal level=-30 dBm\n"
+            "\tEncryption key:on\n"
+            "\tIE: IEEE 802.11i/WPA2 Version 1\n"
+        )
+        nets = iw_scanner._parse_iwlist_scan(raw)
+        assert len(nets) == 2
+        assert nets[0].ssid == "Net1"
+        assert nets[0].security == "WPA"
+        assert nets[1].ssid == "Net2"
+        assert nets[1].security == "WPA2"
+
+    def test_parse_open_network(self, iw_scanner):
+        raw = (
+            "Cell 01 - Address: AA:BB:CC:DD:EE:FF\n"
+            "\tESSID:\"FreeWiFi\"\n"
+            "\tFrequency:2.437 GHz (Channel 6)\n"
+            "\tQuality=70/70  Signal level=-35 dBm\n"
+            "\tEncryption key:off\n"
+        )
+        nets = iw_scanner._parse_iwlist_scan(raw)
+        assert len(nets) == 1
+        assert nets[0].ssid == "FreeWiFi"
+        assert nets[0].security == "OPEN"
+
+    def test_parse_quality_only_no_dbm_defaults_minus_100(self, iw_scanner):
+        raw = (
+            "Cell 01 - Address: 00:11:22:33:44:55\n"
+            "\tESSID:\"QualityOnly\"\n"
+            "\tFrequency:2.412 GHz (Channel 1)\n"
+            "\tQuality=35/70\n"
+            "\tEncryption key:on\n"
+        )
+        nets = iw_scanner._parse_iwlist_scan(raw)
+        assert len(nets) == 1
+        assert nets[0].ssid == "QualityOnly"
+        assert nets[0].signal_dbm == -100  # no Signal level=... dBm found
+
 
 class TestWashScannerAlias:
     def test_wash_scanner_is_iw_scanner(self):

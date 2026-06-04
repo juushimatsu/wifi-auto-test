@@ -147,6 +147,34 @@ class TestSetupAPHostapd:
         )
         assert result is False
 
+    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.run")
+    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.Popen")
+    @patch("wifi_auto_test.ap_manager.linux_ap.open")
+    def test_setup_ap_hostapd_wext_fallback(self, mock_open, mock_popen, mock_run, ap_manager):
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # nmcli disconnect
+            MagicMock(returncode=0),  # nmcli set managed no
+            MagicMock(returncode=0),  # pkill hostapd
+            MagicMock(returncode=0),  # pkill dnsmasq
+            MagicMock(returncode=0),  # ip addr flush
+            MagicMock(returncode=0),  # ip addr add
+            MagicMock(returncode=0),  # ip link set up
+            MagicMock(returncode=0),  # dnsmasq
+            MagicMock(returncode=0),  # iptables
+        ]
+        proc_fail = MagicMock()
+        proc_fail.poll.return_value = 1  # nl80211 fails
+        proc_ok = MagicMock()
+        proc_ok.poll.return_value = None  # wext succeeds
+        mock_popen.side_effect = [proc_fail, proc_ok]
+
+        result = ap_manager._setup_ap_hostapd(
+            "wlan0", "TestAP", "pass123",
+            "192.168.50.1/24", "192.168.50.10,192.168.50.100"
+        )
+        assert result is True
+        assert mock_popen.call_count == 2
+
 
 class TestSetupAP:
     @patch.object(LinuxAPManager, "_setup_ap_nmcli")
