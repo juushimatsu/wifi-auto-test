@@ -263,12 +263,12 @@ class TestScan:
     @patch.object(IwScanner, "_ensure_monitor")
     @patch.object(IwScanner, "_bring_up")
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_scan_iwlist_fallback_on_eopnotsupp(self, mock_run, mock_up, mock_ensure, iw_scanner):
+    def test_scan_iwlist_fallback_on_eopnotsupp_stderr(self, mock_run, mock_up, mock_ensure, iw_scanner):
         mock_ensure.return_value = "wlan1mon"
-        # first call: iw scan fails with EOPNOTSUPP
         fail = MagicMock()
         fail.returncode = 1
         fail.stderr = "command failed: Operation not supported (-95)"
+        fail.stdout = ""
         # second call: iwlist scan succeeds
         success = MagicMock()
         success.returncode = 0
@@ -297,11 +297,38 @@ class TestScan:
     @patch.object(IwScanner, "_ensure_monitor")
     @patch.object(IwScanner, "_bring_up")
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
+    def test_scan_iwlist_fallback_on_eopnotsupp_stdout(self, mock_run, mock_up, mock_ensure, iw_scanner):
+        mock_ensure.return_value = "wlan1mon"
+        fail = MagicMock()
+        fail.returncode = 1
+        fail.stderr = ""
+        fail.stdout = "wlan1mon  Interface doesn't support scanning : Operation not supported"
+        # second call: iwlist scan succeeds
+        success = MagicMock()
+        success.returncode = 0
+        success.stdout = (
+            "Cell 01 - Address: 00:11:22:33:44:55\n"
+            "\tESSID:\"FallbackNetStdout\"\n"
+            "\tFrequency:2.437 GHz (Channel 6)\n"
+            "\tQuality=70/70  Signal level=-30 dBm\n"
+            "\tEncryption key:on\n"
+            "\tWPA2\n"
+        )
+        mock_run.side_effect = [fail, success]
+
+        result = iw_scanner.scan()
+        assert len(result) == 1
+        assert result[0].ssid == "FallbackNetStdout"
+
+    @patch.object(IwScanner, "_ensure_monitor")
+    @patch.object(IwScanner, "_bring_up")
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
     def test_scan_iwlist_fallback_on_lowercase_eopnotsupp(self, mock_run, mock_up, mock_ensure, iw_scanner):
         mock_ensure.return_value = "wlan1mon"
         fail = MagicMock()
         fail.returncode = 1
         fail.stderr = "command failed: operation not supported"
+        fail.stdout = ""
         success = MagicMock()
         success.returncode = 0
         success.stdout = (
@@ -326,8 +353,10 @@ class TestScan:
         fail1 = MagicMock()
         fail1.returncode = 1
         fail1.stderr = "command failed: Operation not supported (-95)"
+        fail1.stdout = ""
         fail2 = MagicMock()
         fail2.returncode = 1
+        fail2.stdout = ""
         fail2.stderr = "interface has no scan results"
         mock_run.side_effect = [fail1, fail2]
 
@@ -400,6 +429,57 @@ class TestParseIwlistScan:
         assert len(nets) == 1
         assert nets[0].ssid == "QualityOnly"
         assert nets[0].signal_dbm == -100  # no Signal level=... dBm found
+
+
+class TestParseAirodumpCsv:
+    def test_parse_single_network_wpa2(self, iw_scanner, tmp_path):
+        csv_content = (
+            "BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key\n"
+            "00:11:22:33:44:55, 2024-01-01 00:00:00, 2024-01-01 00:00:10, 6, 54, WPA2, CCMP, PSK, -45, 100, 0, 0.0.0.0, 7, TestNet, \n"
+        )
+        csv_file = tmp_path / "test-01.csv"
+        csv_file.write_text(csv_content, encoding="utf-8")
+        nets = iw_scanner._parse_airodump_csv(str(csv_file))
+        assert len(nets) == 1
+        assert nets[0].bssid == "00:11:22:33:44:55"
+        assert nets[0].ssid == "TestNet"
+        assert nets[0].channel == 6
+        assert nets[0].signal_dbm == -45
+        assert nets[0].security == "WPA2"
+
+    def test_parse_multiple_networks(self, iw_scanner, tmp_path):
+        csv_content = (
+            "BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key\n"
+            "00:11:22:33:44:01, 2024-01-01 00:00:00, 2024-01-01 00:00:10, 1, 54, WPA2, CCMP, PSK, -50, 100, 0, 0.0.0.0, 4, Net1, \n"
+            "00:11:22:33:44:02, 2024-01-01 00:00:00, 2024-01-01 00:00:10, 11, 54, WPA, TKIP, PSK, -70, 80, 0, 0.0.0.0, 4, Net2, \n"
+            "00:11:22:33:44:03, 2024-01-01 00:00:00, 2024-01-01 00:00:10, 6, 54, OPN, , , -35, 200, 0, 0.0.0.0, 6, FreeWiFi, \n"
+        )
+        csv_file = tmp_path / "test-01.csv"
+        csv_file.write_text(csv_content, encoding="utf-8")
+        nets = iw_scanner._parse_airodump_csv(str(csv_file))
+        assert len(nets) == 3
+        assert nets[0].ssid == "Net1"
+        assert nets[0].security == "WPA2"
+        assert nets[1].ssid == "Net2"
+        assert nets[1].security == "WPA"
+        assert nets[2].ssid == "FreeWiFi"
+        assert nets[2].security == "OPEN"
+
+    def test_parse_skips_header_and_blank(self, iw_scanner, tmp_path):
+        csv_content = (
+            "BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key\n"
+            "\n"
+            "Station MAC, First time seen, Last time seen, Power, # packets, BSSID, Probed ESSIDs\n"
+            "AA:BB:CC:DD:EE:FF, 2024-01-01 00:00:00, 2024-01-01 00:00:10, -40, 5, 00:11:22:33:44:55, \n"
+        )
+        csv_file = tmp_path / "test-01.csv"
+        csv_file.write_text(csv_content, encoding="utf-8")
+        nets = iw_scanner._parse_airodump_csv(str(csv_file))
+        assert len(nets) == 0
+
+    def test_parse_missing_file_returns_empty(self, iw_scanner):
+        nets = iw_scanner._parse_airodump_csv("/nonexistent/path.csv")
+        assert nets == []
 
 
 class TestWashScannerAlias:

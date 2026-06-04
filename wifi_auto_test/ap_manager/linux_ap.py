@@ -153,7 +153,10 @@ class LinuxAPManager(IAPManager):
                 self._hostapd_pid = pid
                 break
         else:
-            self._log("[!] hostapd не запустился ни с одним драйвером")
+            # Fallback: airbase-ng для адаптеров без nl80211/wext (например Realtek USB)
+            if self._setup_ap_airbase_ng(interface, ssid, ip_cidr, dhcp_range):
+                return True
+            self._log("[!] hostapd не запустился ни с одним драйвером, airbase-ng тоже не сработал")
             return False
 
         # dnsmasq
@@ -194,6 +197,91 @@ class LinuxAPManager(IAPManager):
             self._log(f"[!] Устройство не поддерживает AP через nmcli, используем hostapd")
             return self._setup_ap_hostapd(interface, ssid, password, ip_cidr, dhcp_range)
 
+    def _setup_ap_airbase_ng(
+        self,
+        interface: str,
+        ssid: str,
+        ip_cidr: str,
+        dhcp_range: str,
+    ) -> bool:
+        """Fallback через airbase-ng для адаптеров без nl80211/wext (например RTL8188EUS)."""
+        self._log(f"[*] Настройка AP через airbase-ng на {interface}: {ssid}")
+
+        # Отключить от NM и убить старые процессы
+        subprocess.run(
+            ["sudo", "nmcli", "device", "disconnect", interface],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["sudo", "nmcli", "device", "set", interface, "managed", "no"],
+            capture_output=True,
+        )
+        subprocess.run(["sudo", "pkill", "-f", f"airbase-ng.*{ssid}"], capture_output=True)
+        subprocess.run(["sudo", "pkill", "-f", f"dnsmasq.*at0"], capture_output=True)
+        time.sleep(0.3)
+
+        # Перевести в monitor mode (airbase-ng требует monitor)
+        subprocess.run(["sudo", "ip", "link", "set", "dev", interface, "down"], capture_output=True)
+        subprocess.run(
+            ["sudo", "iwconfig", interface, "mode", "monitor"],
+            capture_output=True,
+        )
+        # fallback через iw если iwconfig не сработал
+        subprocess.run(
+            ["sudo", "iw", "dev", interface, "set", "type", "monitor"],
+            capture_output=True,
+        )
+        subprocess.run(["sudo", "ip", "link", "set", "dev", interface, "up"], capture_output=True)
+        time.sleep(0.5)
+
+        # Запустить airbase-ng (открытая AP — WPA2 не поддерживается airbase-ng)
+        log_path = "/tmp/airbase-ng-wifi-auto-test.log"
+        with open(log_path, "w") as logf:
+            proc = subprocess.Popen(
+                ["sudo", "airbase-ng", "-e", ssid, "-c", "6", interface],
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+            )
+        time.sleep(2)
+        if proc.poll() is not None:
+            with open(log_path, "r") as f:
+                err = f.read().strip()
+            self._log(f"[!] airbase-ng failed: {err[:500]}")
+            return False
+        self._hostapd_pid = proc.pid  # переиспользуем _hostapd_pid для airbase-ng
+
+        # Настроить tap-интерфейс at0, созданный airbase-ng
+        subprocess.run(["sudo", "ip", "addr", "flush", "dev", "at0"], capture_output=True)
+        subprocess.run(
+            ["sudo", "ip", "addr", "add", ip_cidr, "dev", "at0"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["sudo", "ip", "link", "set", "dev", "at0", "up"],
+            capture_output=True,
+        )
+
+        # dnsmasq на at0
+        subprocess.run(
+            ["sudo", "dnsmasq",
+             "--interface=at0",
+             "--bind-interfaces",
+             f"--dhcp-range={dhcp_range}",
+             "--conf-file=/dev/null",
+             ],
+            capture_output=True,
+        )
+
+        # NAT
+        subprocess.run(
+            ["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING",
+             "-o", "end0", "-j", "MASQUERADE"],
+            capture_output=True,
+        )
+
+        self._log(f"[+] AP {ssid} запущена через airbase-ng (открытая сеть) на {interface}")
+        return True
+
     def stop_ap(self) -> bool:
         self._log("[*] Остановка AP")
         if self._con_name:
@@ -212,7 +300,15 @@ class LinuxAPManager(IAPManager):
                 capture_output=True,
             )
             subprocess.run(
+                ["sudo", "pkill", "-f", f"airbase-ng.*{self._interface}"],
+                capture_output=True,
+            )
+            subprocess.run(
                 ["sudo", "pkill", "-f", f"dnsmasq.*{self._interface}"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["sudo", "pkill", "-f", "dnsmasq.*at0"],
                 capture_output=True,
             )
             self._hostapd_pid = None

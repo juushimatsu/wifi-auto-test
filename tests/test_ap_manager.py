@@ -126,20 +126,33 @@ class TestSetupAPHostapd:
     @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.Popen")
     @patch("wifi_auto_test.ap_manager.linux_ap.open")
     def test_setup_ap_hostapd_fails(self, mock_open, mock_popen, mock_run, ap_manager):
+        # Enough mocks for hostapd setup + airbase-ng fallback path, then default (returncode=0)
         mock_run.side_effect = [
-            MagicMock(returncode=0),  # nmcli disconnect
+            MagicMock(returncode=0),  # nmcli disconnect (hostapd)
             MagicMock(returncode=0),  # nmcli set managed no
             MagicMock(returncode=0),  # pkill hostapd
             MagicMock(returncode=0),  # pkill dnsmasq
             MagicMock(returncode=0),  # ip addr flush
             MagicMock(returncode=0),  # ip addr add
             MagicMock(returncode=0),  # ip link set up
-            MagicMock(returncode=0),  # dnsmasq
+            # airbase-ng fallback:
+            MagicMock(returncode=0),  # nmcli disconnect
+            MagicMock(returncode=0),  # nmcli set managed no
+            MagicMock(returncode=0),  # pkill airbase-ng
+            MagicMock(returncode=0),  # pkill dnsmasq at0
+            MagicMock(returncode=0),  # ip link down
+            MagicMock(returncode=0),  # iwconfig mode monitor
+            MagicMock(returncode=0),  # iw dev set type monitor
+            MagicMock(returncode=0),  # ip link up
+            MagicMock(returncode=0),  # ip addr flush at0
+            MagicMock(returncode=0),  # ip addr add at0
+            MagicMock(returncode=0),  # ip link up at0
+            MagicMock(returncode=0),  # dnsmasq at0
             MagicMock(returncode=0),  # iptables
         ]
         proc = MagicMock()
         proc.poll.return_value = 1  # exited immediately -> failure
-        mock_popen.return_value = proc
+        mock_popen.return_value = proc  # nl80211, wext, airbase-ng all fail
 
         result = ap_manager._setup_ap_hostapd(
             "wlan0", "TestAP", "pass123",
@@ -174,6 +187,55 @@ class TestSetupAPHostapd:
         )
         assert result is True
         assert mock_popen.call_count == 2
+
+    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.run")
+    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.Popen")
+    @patch("wifi_auto_test.ap_manager.linux_ap.open")
+    def test_setup_ap_airbase_ng_fallback(self, mock_open, mock_popen, mock_run, ap_manager):
+        """hostapd fails both nl80211 and wext -> airbase-ng fallback works."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # nmcli disconnect (hostapd setup)
+            MagicMock(returncode=0),  # nmcli set managed no
+            MagicMock(returncode=0),  # pkill hostapd
+            MagicMock(returncode=0),  # pkill dnsmasq
+            MagicMock(returncode=0),  # ip addr flush
+            MagicMock(returncode=0),  # ip addr add
+            MagicMock(returncode=0),  # ip link set up
+            # airbase-ng calls start here:
+            MagicMock(returncode=0),  # nmcli disconnect
+            MagicMock(returncode=0),  # nmcli set managed no
+            MagicMock(returncode=0),  # pkill airbase-ng
+            MagicMock(returncode=0),  # pkill dnsmasq at0
+            MagicMock(returncode=0),  # ip link down
+            MagicMock(returncode=0),  # iwconfig mode monitor
+            MagicMock(returncode=0),  # iw dev set type monitor
+            MagicMock(returncode=0),  # ip link up
+            MagicMock(returncode=0),  # ip addr flush at0
+            MagicMock(returncode=0),  # ip addr add at0
+            MagicMock(returncode=0),  # ip link up at0
+            MagicMock(returncode=0),  # dnsmasq
+            MagicMock(returncode=0),  # iptables
+        ]
+        proc_fail1 = MagicMock()
+        proc_fail1.poll.return_value = 1  # nl80211 fails
+        proc_fail2 = MagicMock()
+        proc_fail2.poll.return_value = 1  # wext fails
+        proc_ok = MagicMock()
+        proc_ok.poll.return_value = None  # airbase-ng succeeds
+        mock_popen.side_effect = [proc_fail1, proc_fail2, proc_ok]
+
+        result = ap_manager._setup_ap_hostapd(
+            "wlan0", "TestAP", "pass123",
+            "192.168.50.1/24", "192.168.50.10,192.168.50.100"
+        )
+        assert result is True
+        assert mock_popen.call_count == 3
+        # airbase-ng called with right args
+        mock_popen.assert_called_with(
+            ["sudo", "airbase-ng", "-e", "TestAP", "-c", "6", "wlan0"],
+            stdout=mock_open.return_value,
+            stderr=subprocess.STDOUT,
+        )
 
 
 class TestSetupAP:

@@ -252,7 +252,7 @@ class IwScanner(IScanner):
                     timeout=self._scan_interval,
                 )
         if result.returncode != 0:
-            err = result.stderr.strip()
+            err = (result.stderr or result.stdout or "").strip()
             # Fallback: iwlist scan для драйверов без nl80211 (например Realtek)
             if "operation not supported" in err.lower() or "-95" in err:
                 result2 = subprocess.run(
@@ -264,13 +264,97 @@ class IwScanner(IScanner):
                     networks = self._parse_iwlist_scan(result2.stdout)
                     print(f"[DEBUG] Найдено сетей через iwlist: {len(networks)}")
                     return networks
-                err = result2.stderr.strip() or err
+                err2 = (result2.stderr or result2.stdout or "").strip()
+                if "operation not supported" in err2.lower() or "-95" in err2:
+                    # Interface is in monitor mode; iwlist also fails.
+                    # Fallback: airodump-ng passive scan.
+                    networks = self._scan_with_airodump(iface)
+                    if networks:
+                        return networks
+                err = err2 or err
             print(f"[!] iw scan failed: {err[:200]}")
             return []
 
         networks = self._parse_iw_scan(result.stdout)
         print(f"[DEBUG] Найдено сетей через iw: {len(networks)}")
         return networks
+
+    def _parse_airodump_csv(self, csv_path: str) -> List[WiFiNetwork]:
+        """Парсинг CSV-вывода airodump-ng — fallback для monitor mode."""
+        networks = []
+        import csv
+        try:
+            with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if not row or row[0].strip().lower() == "bssid":
+                        continue
+                    # BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, Power, # beacons, # IV, LAN IP, ID-length, ESSID, Key
+                    if len(row) >= 14:
+                        bssid = row[0].strip()
+                        if not re.match(r"[0-9A-Fa-f:]{17}", bssid):
+                            continue
+                        try:
+                            channel = int(row[3].strip())
+                        except ValueError:
+                            channel = 0
+                        try:
+                            signal = int(row[8].strip())
+                        except ValueError:
+                            signal = -100
+                        ssid = row[13].strip()
+                        privacy = row[5].strip().upper()
+                        if "WPA2" in privacy or "WPA3" in privacy:
+                            security = "WPA2"
+                        elif "WPA" in privacy:
+                            security = "WPA"
+                        elif "WEP" in privacy:
+                            security = "WEP"
+                        elif "OPN" in privacy or "OPEN" in privacy:
+                            security = "OPEN"
+                        else:
+                            security = "UNKNOWN"
+                        networks.append(WiFiNetwork(
+                            bssid=bssid.upper(),
+                            ssid=ssid,
+                            channel=channel,
+                            signal_dbm=signal,
+                            security=security,
+                        ))
+        except (FileNotFoundError, OSError):
+            pass
+        return networks
+
+    def _scan_with_airodump(self, iface: str) -> List[WiFiNetwork]:
+        """Запустить airodump-ng на 5 секунд и распарсить CSV."""
+        import glob
+        prefix = "/tmp/airodump-wifi-auto-test"
+        # clean old files
+        for old in glob.glob(prefix + "*"):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
+        proc = subprocess.Popen(
+            ["sudo", "airodump-ng", "--write-interval", "1", "-w", prefix, "--output-format", "csv", iface],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(5)
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+        csv_files = glob.glob(prefix + "-*.csv")
+        for csv_path in sorted(csv_files):
+            nets = self._parse_airodump_csv(csv_path)
+            if nets:
+                print(f"[DEBUG] Найдено сетей через airodump-ng: {len(nets)}")
+                return nets
+        return []
 
 
 # Alias для обратной совместимости
