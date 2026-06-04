@@ -10,7 +10,7 @@ import signal
 import sys
 
 from wifi_auto_test.ap_manager import LinuxAPManager
-from wifi_auto_test.attack import HcxdumpAttack
+from wifi_auto_test.attack import HcxdumpAttack, AirodumpAttack, HybridAttack
 from wifi_auto_test.config import JsonConfigStore
 from wifi_auto_test.core.orchestrator import Orchestrator
 from wifi_auto_test.logger import FileWebSocketLogger
@@ -93,13 +93,21 @@ def main():
         scan_interval=config.get("scan_interval_seconds"),
     )
 
-    attack = HcxdumpAttack(
+    hcxdump = HcxdumpAttack(
         interface=test_iface,
         output_dir=config.get("output_dir"),
         timeout=config.get("attack_timeout_seconds"),
         process_runner=ProcessRunner(),
         logger=logger.info,
     )
+    airodump = AirodumpAttack(
+        interface=test_iface,
+        output_dir=config.get("output_dir"),
+        timeout=config.get("attack_timeout_seconds"),
+        process_runner=ProcessRunner(),
+        logger=logger.info,
+    )
+    attack = HybridAttack(hcxdump=hcxdump, airodump=airodump)
 
     repo = SqliteStateRepository()
 

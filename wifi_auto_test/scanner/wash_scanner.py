@@ -328,6 +328,8 @@ class IwScanner(IScanner):
                             continue
                         try:
                             channel = int(row[3].strip())
+                            if channel < 1:
+                                channel = 0
                         except ValueError:
                             channel = 0
                         try:
