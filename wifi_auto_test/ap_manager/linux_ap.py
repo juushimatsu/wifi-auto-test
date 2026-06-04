@@ -132,14 +132,18 @@ class LinuxAPManager(IAPManager):
             )
 
         # Запустить hostapd
-        proc = subprocess.Popen(
-            ["sudo", "hostapd", "-B", conf_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        log_path = "/tmp/hostapd-wifi-auto-test.log"
+        with open(log_path, "w") as logf:
+            proc = subprocess.Popen(
+                ["sudo", "hostapd", "-B", conf_path],
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+            )
         time.sleep(1)
         if proc.poll() is not None:
-            self._log("[!] hostapd failed to start")
+            with open(log_path, "r") as f:
+                err = f.read().strip()
+            self._log(f"[!] hostapd failed to start: {err[:500]}")
             return False
         self._hostapd_pid = proc.pid
 

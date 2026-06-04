@@ -86,7 +86,11 @@ class TestGetInterfaceMode:
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
     def test_get_mode_both_fail_falls_back_to_sysfs(self, mock_run, iw_scanner):
         mock_run.return_value.returncode = 1
-        with patch("builtins.open", return_value=MagicMock(read=MagicMock(return_value="803"))):
+        mock_file = MagicMock()
+        mock_file.__enter__ = MagicMock(return_value=mock_file)
+        mock_file.__exit__ = MagicMock(return_value=False)
+        mock_file.read.return_value = "803"
+        with patch("builtins.open", return_value=mock_file):
             assert iw_scanner._get_interface_mode("wlan1mon") == "monitor"
 
 
@@ -149,7 +153,7 @@ class TestEnsureMonitor:
     @patch.object(IwScanner, "_get_interface_mode")
     @patch.object(IwScanner, "_find_monitor_interface")
     def test_iw_fallback(self, mock_find, mock_mode, mock_subprocess, iw_scanner):
-        mock_mode.side_effect = ["managed", "unknown", "unknown", "monitor"]
+        mock_mode.side_effect = ["managed", "monitor"]
         mock_find.side_effect = [None, None]
 
         result = iw_scanner._ensure_monitor()

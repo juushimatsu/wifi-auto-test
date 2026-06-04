@@ -29,11 +29,20 @@ class IwScanner(IScanner):
 
     def _find_interfaces(self) -> List[str]:
         result = []
-        # Primary: /sys/class/net/*/wireless (works on most systems including Orange Pi)
+        # Find wireless interfaces via sysfs (works on most systems including Orange Pi)
         try:
             for entry in os.listdir("/sys/class/net"):
+                # Regular wireless interfaces have wireless/ subdir
                 if os.path.exists(f"/sys/class/net/{entry}/wireless"):
                     result.append(entry)
+                # Monitor interfaces (airmon-ng) may only have type 803
+                elif os.path.exists(f"/sys/class/net/{entry}/type"):
+                    try:
+                        with open(f"/sys/class/net/{entry}/type", "r") as f:
+                            if f.read().strip() == "803":
+                                result.append(entry)
+                    except OSError:
+                        pass
         except OSError:
             pass
         # Fallback: iw dev
