@@ -286,7 +286,25 @@ class LinuxAPManager(IAPManager):
             capture_output=True,
         )
 
-        self._log(f"[+] AP {ssid} запущена через wpa_supplicant на {interface}")
+        # Verify AP is actually running (check iw dev info for type AP)
+        for _ in range(10):
+            result = subprocess.run(
+                ["sudo", "iw", "dev", interface, "info"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and ("type AP" in result.stdout or "type ap" in result.stdout):
+                self._log(f"[+] AP {ssid} запущена через wpa_supplicant на {interface} (verified AP mode)")
+                return True
+            result = subprocess.run(
+                ["sudo", "ip", "addr", "show", "dev", interface],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and ip in result.stdout:
+                self._log(f"[+] AP {ssid} запущена через wpa_supplicant на {interface} (verified IP)")
+                return True
+            time.sleep(0.5)
+
+        self._log(f"[!] wpa_supplicant стартовал но AP не подтверждена, проверь лог: {log_path}")
         return True
 
     def _setup_ap_airbase_ng(
