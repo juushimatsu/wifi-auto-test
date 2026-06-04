@@ -29,25 +29,43 @@ class IwScanner(IScanner):
 
     def _find_interfaces(self) -> List[str]:
         result = []
+        # Primary: /sys/class/net/*/wireless (works on most systems including Orange Pi)
         try:
-            # iw dev показывает и managed, и monitor интерфейсы
-            out = subprocess.run(
-                ["iw", "dev"], capture_output=True, text=True
-            ).stdout
-            for line in out.split("\n"):
-                if line.strip().startswith("Interface "):
-                    result.append(line.strip().split(" ")[1])
-        except Exception:
+            for entry in os.listdir("/sys/class/net"):
+                if os.path.exists(f"/sys/class/net/{entry}/wireless"):
+                    result.append(entry)
+        except OSError:
             pass
+        # Fallback: iw dev
+        if not result:
+            try:
+                out = subprocess.run(
+                    ["iw", "dev"], capture_output=True, text=True
+                ).stdout
+                for line in out.split("\n"):
+                    if line.strip().startswith("Interface "):
+                        result.append(line.strip().split(" ")[1])
+            except Exception:
+                pass
         return result
 
     def _get_interface_mode(self, iface: str) -> str:
+        # Primary: iwconfig (works on Orange Pi)
         result = subprocess.run(
-            ["sudo", "iw", "dev", iface, "info"],
+            ["sudo", "iwconfig", iface],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
             for line in result.stdout.split("\n"):
+                if "Mode:" in line:
+                    return line.split("Mode:")[1].split()[0].lower()
+        # Fallback: iw dev <iface> info
+        result2 = subprocess.run(
+            ["sudo", "iw", "dev", iface, "info"],
+            capture_output=True, text=True,
+        )
+        if result2.returncode == 0:
+            for line in result2.stdout.split("\n"):
                 if "type" in line.lower():
                     return line.strip().rsplit(" ", 1)[-1].lower()
         # sysfs fallback
@@ -120,7 +138,7 @@ class IwScanner(IScanner):
                         ssid=current.get("ssid", ""),
                         channel=int(current.get("channel", 0)),
                         signal_dbm=int(current.get("signal", -100)),
-                        encryption=current.get("encryption", "UNKNOWN"),
+                        security=current.get("security", "UNKNOWN"),
                     ))
                 current = {"bssid": line.split()[1].replace("(", "").replace(")", "")}
             elif "SSID:" in line and line.startswith("SSID:"):
@@ -134,16 +152,16 @@ class IwScanner(IScanner):
                 if m:
                     current["channel"] = int(m.group(1))
             elif "RSN:" in line or "WPA:" in line:
-                current["encryption"] = "WPA2"
-            elif "Privacy" in line and "encryption" not in current:
-                current["encryption"] = "WEP"
+                current["security"] = "WPA2"
+            elif "Privacy" in line and "security" not in current:
+                current["security"] = "WEP"
         if current and "bssid" in current:
             networks.append(WiFiNetwork(
                 bssid=current.get("bssid", ""),
                 ssid=current.get("ssid", ""),
                 channel=int(current.get("channel", 0)),
                 signal_dbm=int(current.get("signal", -100)),
-                encryption=current.get("encryption", "UNKNOWN"),
+                security=current.get("security", "UNKNOWN"),
             ))
         return networks
 

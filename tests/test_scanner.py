@@ -13,19 +13,36 @@ def iw_scanner(mock_process_runner, mock_parser):
 
 
 class TestFindInterfaces:
+    @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
+    @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
+    def test_find_interfaces_via_sysfs(self, mock_exists, mock_listdir, iw_scanner):
+        mock_listdir.return_value = ["eth0", "wlan0", "wlan1mon", "lo"]
+        def exists_side(path):
+            return "wireless" in path and any(
+                x in path for x in ["wlan0", "wlan1mon"]
+            )
+        mock_exists.side_effect = exists_side
+
+        result = iw_scanner._find_interfaces()
+        assert sorted(result) == ["wlan0", "wlan1mon"]
+
+    @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
+    @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_find_interfaces_via_iw_dev(self, mock_run, iw_scanner):
-        mock_run.return_value.stdout = (
-            "phy#0\n\tInterface wlan0\n\t\tifindex 3\n"
-            "\tInterface wlan1mon\n\t\tifindex 4\n"
-        )
+    def test_find_interfaces_sysfs_falls_back_to_iw_dev(self, mock_run, mock_exists, mock_listdir, iw_scanner):
+        mock_listdir.return_value = ["eth0", "lo"]
+        mock_exists.return_value = False
+        mock_run.return_value.stdout = "\tInterface wlan0\n\t\tifindex 3\n"
         mock_run.return_value.returncode = 0
 
         result = iw_scanner._find_interfaces()
-        assert result == ["wlan0", "wlan1mon"]
+        assert result == ["wlan0"]
 
+    @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
+    @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_find_interfaces_iw_dev_fails(self, mock_run, iw_scanner):
+    def test_find_interfaces_both_fail(self, mock_run, mock_exists, mock_listdir, iw_scanner):
+        mock_listdir.side_effect = OSError
         mock_run.return_value.stdout = ""
         mock_run.return_value.returncode = 1
 
@@ -35,31 +52,42 @@ class TestFindInterfaces:
 
 class TestGetInterfaceMode:
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_get_mode_monitor(self, mock_run, iw_scanner):
+    def test_get_mode_monitor_via_iwconfig(self, mock_run, iw_scanner):
         mock_run.return_value.stdout = (
-            "Interface wlan1mon\n\tifindex 4\n\twdev 0x1\n\taddr 00:11:22:33:44:55\n"
-            "\ttype monitor\n\twiphy 0\n"
+            "wlan1mon  IEEE 802.11  Mode:Monitor  Tx-Power=20 dBm\n"
         )
         mock_run.return_value.returncode = 0
 
         assert iw_scanner._get_interface_mode("wlan1mon") == "monitor"
 
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_get_mode_managed(self, mock_run, iw_scanner):
+    def test_get_mode_managed_via_iwconfig(self, mock_run, iw_scanner):
         mock_run.return_value.stdout = (
-            "Interface wlan0\n\tifindex 3\n\twdev 0x1\n\taddr 00:11:22:33:44:55\n"
-            "\ttype managed\n\twiphy 0\n"
+            "wlan0     IEEE 802.11  ESSID:off/any  Mode:Managed  Frequency:2.452 GHz\n"
         )
         mock_run.return_value.returncode = 0
 
         assert iw_scanner._get_interface_mode("wlan0") == "managed"
 
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_get_mode_iw_falls_back_to_sysfs(self, mock_run, iw_scanner):
+    def test_get_mode_iwconfig_fails_falls_back_to_iw_dev(self, mock_run, iw_scanner):
+        fail = MagicMock(returncode=1)
+        ok = MagicMock(
+            returncode=0,
+            stdout=(
+                "Interface wlan1mon\n\tifindex 4\n\twdev 0x1\n"
+                "\taddr 00:11:22:33:44:55\n\ttype monitor\n\twiphy 0\n"
+            ),
+        )
+        mock_run.side_effect = [fail, ok]
+
+        assert iw_scanner._get_interface_mode("wlan1mon") == "monitor"
+
+    @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
+    def test_get_mode_both_fail_falls_back_to_sysfs(self, mock_run, iw_scanner):
         mock_run.return_value.returncode = 1
         with patch("builtins.open", return_value=MagicMock(read=MagicMock(return_value="803"))):
-            with patch("wifi_auto_test.scanner.wash_scanner.os.path.exists", return_value=True):
-                assert iw_scanner._get_interface_mode("wlan1mon") == "monitor"
+            assert iw_scanner._get_interface_mode("wlan1mon") == "monitor"
 
 
 class TestFindMonitorInterface:
@@ -143,7 +171,7 @@ class TestParseIwScan:
         assert nets[0].ssid == "MyNet"
         assert nets[0].channel == 6
         assert nets[0].signal_dbm == -55
-        assert nets[0].encryption == "WPA2"
+        assert nets[0].security == "WPA2"
 
     def test_parse_multiple_networks(self, iw_scanner):
         raw = (
@@ -155,9 +183,9 @@ class TestParseIwScan:
         nets = iw_scanner._parse_iw_scan(raw)
         assert len(nets) == 2
         assert nets[0].ssid == "Net1"
-        assert nets[0].encryption == "WPA2"
+        assert nets[0].security == "WPA2"
         assert nets[1].ssid == "Net2"
-        assert nets[1].encryption == "WEP"
+        assert nets[1].security == "WEP"
 
     def test_parse_no_networks(self, iw_scanner):
         assert iw_scanner._parse_iw_scan("") == []
@@ -166,7 +194,7 @@ class TestParseIwScan:
         raw = "BSS 00:11:22:33:44:55\n\tSSID: NoCh\n\tsignal: -60 dBm\n"
         nets = iw_scanner._parse_iw_scan(raw)
         assert nets[0].channel == 0
-        assert nets[0].encryption == "UNKNOWN"
+        assert nets[0].security == "UNKNOWN"
 
 
 class TestScan:
