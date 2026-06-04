@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock, patch
+import subprocess
+from unittest.mock import MagicMock, patch, call
 import pytest
 
 from wifi_auto_test.attack.airodump_attack import AirodumpAttack
@@ -9,7 +10,6 @@ from wifi_auto_test.core.models import WiFiNetwork, TestStatus
 @pytest.fixture
 def airodump_attack():
     runner = MagicMock()
-    runner.run.return_value = 0
     return AirodumpAttack(
         interface="wlan0mon",
         output_dir="/tmp/caps",
@@ -19,16 +19,28 @@ def airodump_attack():
 
 
 class TestAirodumpAttack:
-    def test_run_success_when_handshake_in_stdout(self, airodump_attack, tmp_path):
-        airodump_attack._output_dir = str(tmp_path)
-        airodump_attack._runner.run.return_value = 0
+    @patch.object(AirodumpAttack, "_has_handshake")
+    @patch("wifi_auto_test.attack.airodump_attack.os.path.exists")
+    @patch("wifi_auto_test.attack.airodump_attack.subprocess.Popen")
+    @patch("wifi_auto_test.attack.airodump_attack.subprocess.run")
+    @patch("wifi_auto_test.attack.airodump_attack.time.sleep")
+    @patch("wifi_auto_test.attack.airodump_attack.glob.glob")
+    @patch("wifi_auto_test.attack.airodump_attack.os.path.getsize")
+    def test_run_success_when_handshake_in_pcap(
+        self, mock_getsize, mock_glob, mock_sleep, mock_run, mock_popen, mock_exists, mock_has_handshake, airodump_attack
+    ):
+        # Mock airodump-ng Popen
+        mock_proc = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.readline = MagicMock(return_value="")
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = MagicMock(return_value=0)
+        mock_popen.return_value = mock_proc
 
-        # Simulate stdout callback triggering handshake detection
-        def capture_stdout_call(*, on_stdout, **kwargs):
-            on_stdout("WPA handshake: 00:11:22:33:44:55")
-            return 0
-
-        airodump_attack._runner.run.side_effect = capture_stdout_call
+        mock_has_handshake.return_value = True
+        mock_exists.return_value = True
+        mock_glob.return_value = ["/tmp/caps/test.cap"]
+        mock_getsize.return_value = 1024
 
         network = WiFiNetwork(
             bssid="00:11:22:33:44:55",
@@ -40,9 +52,26 @@ class TestAirodumpAttack:
         result = airodump_attack.run(network)
         assert result.status == TestStatus.SUCCESS
         assert result.captured_frames == "WPA_HANDSHAKE"
+        assert result.pcap_file is not None
+        mock_has_handshake.assert_called_once()
 
-    def test_run_failure_when_no_handshake(self, airodump_attack):
-        airodump_attack._runner.run.return_value = 0
+    @patch("wifi_auto_test.attack.airodump_attack.subprocess.Popen")
+    @patch("wifi_auto_test.attack.airodump_attack.subprocess.run")
+    @patch("wifi_auto_test.attack.airodump_attack.time.sleep")
+    @patch("wifi_auto_test.attack.airodump_attack.glob.glob")
+    def test_run_failure_when_no_handshake(
+        self, mock_glob, mock_sleep, mock_run, mock_popen, airodump_attack
+    ):
+        mock_proc = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.readline = MagicMock(return_value="")
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = MagicMock(return_value=0)
+        mock_popen.return_value = mock_proc
+
+        mock_run.return_value = MagicMock(stdout="WPA (0 handshake)", stderr="", returncode=0)
+        mock_glob.return_value = []
+
         network = WiFiNetwork(
             bssid="00:11:22:33:44:55",
             ssid="TestNet",
@@ -51,17 +80,27 @@ class TestAirodumpAttack:
             security="WPA2",
         )
         result = airodump_attack.run(network)
-        assert result.status == TestStatus.FAILURE
+        assert result.status == TestStatus.TIMEOUT
+        assert result.pcap_file is None
+        assert result.captured_frames is None
 
-    def test_run_uses_channel_1_when_network_channel_invalid(self, airodump_attack):
-        called_with = None
+    @patch("wifi_auto_test.attack.airodump_attack.subprocess.Popen")
+    @patch("wifi_auto_test.attack.airodump_attack.subprocess.run")
+    @patch("wifi_auto_test.attack.airodump_attack.time.sleep")
+    @patch("wifi_auto_test.attack.airodump_attack.glob.glob")
+    def test_run_uses_channel_1_when_network_channel_invalid(
+        self, mock_glob, mock_sleep, mock_run, mock_popen, airodump_attack
+    ):
+        mock_proc = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.stderr.readline = MagicMock(return_value="")
+        mock_proc.terminate = MagicMock()
+        mock_proc.wait = MagicMock(return_value=0)
+        mock_popen.return_value = mock_proc
 
-        def capture_cmd(*, command, **kwargs):
-            nonlocal called_with
-            called_with = command
-            return 0
+        mock_run.return_value = MagicMock(stdout="WPA (0 handshake)", stderr="", returncode=0)
+        mock_glob.return_value = []
 
-        airodump_attack._runner.run.side_effect = capture_cmd
         network = WiFiNetwork(
             bssid="00:11:22:33:44:55",
             ssid="BadCh",
@@ -70,8 +109,10 @@ class TestAirodumpAttack:
             security="WPA2",
         )
         airodump_attack.run(network)
-        assert "-c" in called_with
-        assert called_with[called_with.index("-c") + 1] == "1"
+        # Verify airodump-ng called with channel 1
+        airodump_call = mock_popen.call_args[0][0]
+        assert "-c" in airodump_call
+        assert airodump_call[airodump_call.index("-c") + 1] == "1"
 
 
 class TestHybridAttack:
