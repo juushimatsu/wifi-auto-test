@@ -14,7 +14,9 @@ def iw_scanner(mock_process_runner, mock_parser):
 
 class TestFindInterfaces:
     @patch("wifi_auto_test.scanner.wash_scanner.subprocess.run")
-    def test_find_interfaces_via_iwconfig(self, mock_run, iw_scanner):
+    @patch("wifi_auto_test.scanner.wash_scanner.os.listdir")
+    @patch("wifi_auto_test.scanner.wash_scanner.os.path.exists")
+    def test_find_interfaces_via_iwconfig(self, mock_exists, mock_listdir, mock_run, iw_scanner):
         mock_run.return_value.stdout = (
             "lo        no wireless extensions.\n\n"
             "eth0      no wireless extensions.\n\n"
@@ -23,6 +25,8 @@ class TestFindInterfaces:
             "wlan1mon  IEEE 802.11  Mode:Monitor  Frequency:2.412 GHz\n"
         )
         mock_run.return_value.returncode = 0
+        mock_listdir.return_value = ["lo", "eth0", "wlan0", "wlan1mon"]
+        mock_exists.return_value = False
 
         result = sorted(iw_scanner._find_interfaces())
         assert result == ["wlan0", "wlan1mon"]

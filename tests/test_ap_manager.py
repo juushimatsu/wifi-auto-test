@@ -11,28 +11,6 @@ def ap_manager():
     return LinuxAPManager(logger=lambda x: None)
 
 
-class TestSupportsAP:
-    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.run")
-    def test_supports_ap_true(self, mock_run, ap_manager):
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = "\t	* AP/VLAN"
-
-        assert ap_manager._supports_ap_via_nm("wlan0") is True
-
-    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.run")
-    def test_supports_ap_false(self, mock_run, ap_manager):
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = "\t	* managed"
-
-        assert ap_manager._supports_ap_via_nm("wlan0") is False
-
-    @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.run")
-    def test_supports_ap_iw_fails(self, mock_run, ap_manager):
-        mock_run.return_value.returncode = 1
-
-        assert ap_manager._supports_ap_via_nm("wlan0") is False
-
-
 class TestSetupAPNmcli:
     @patch("wifi_auto_test.ap_manager.linux_ap.subprocess.run")
     def test_setup_ap_success(self, mock_run, ap_manager):
@@ -243,10 +221,9 @@ class TestSetupAPHostapd:
 class TestSetupAP:
     @patch.object(LinuxAPManager, "_setup_ap_nmcli")
     @patch.object(LinuxAPManager, "_setup_ap_hostapd")
-    @patch.object(LinuxAPManager, "_supports_ap_via_nm")
-    def test_uses_nmcli_when_supported(self, mock_supports, mock_hostapd, mock_nmcli, ap_manager):
-        mock_supports.return_value = True
+    def test_uses_nmcli_then_hostapd(self, mock_hostapd, mock_nmcli, ap_manager):
         mock_nmcli.return_value = True
+        mock_hostapd.return_value = False
 
         result = ap_manager.setup_ap("wlan0", "TestAP", "pass123", "10.0.0.1/24", "10.0.0.10,10.0.0.100")
         assert result is True
@@ -255,15 +232,30 @@ class TestSetupAP:
 
     @patch.object(LinuxAPManager, "_setup_ap_nmcli")
     @patch.object(LinuxAPManager, "_setup_ap_hostapd")
-    @patch.object(LinuxAPManager, "_supports_ap_via_nm")
-    def test_uses_hostapd_fallback(self, mock_supports, mock_hostapd, mock_nmcli, ap_manager):
-        mock_supports.return_value = False
+    @patch.object(LinuxAPManager, "_setup_ap_wpa_supplicant")
+    def test_uses_hostapd_fallback(self, mock_wpa, mock_hostapd, mock_nmcli, ap_manager):
+        mock_nmcli.return_value = False
         mock_hostapd.return_value = True
 
         result = ap_manager.setup_ap("wlan0", "TestAP", "pass123", "10.0.0.1/24", "10.0.0.10,10.0.0.100")
         assert result is True
-        mock_nmcli.assert_not_called()
+        mock_nmcli.assert_called_once()
         mock_hostapd.assert_called_once()
+        mock_wpa.assert_not_called()
+
+    @patch.object(LinuxAPManager, "_setup_ap_nmcli")
+    @patch.object(LinuxAPManager, "_setup_ap_hostapd")
+    @patch.object(LinuxAPManager, "_setup_ap_wpa_supplicant")
+    def test_uses_wpa_supplicant_last_resort(self, mock_wpa, mock_hostapd, mock_nmcli, ap_manager):
+        mock_nmcli.return_value = False
+        mock_hostapd.return_value = False
+        mock_wpa.return_value = True
+
+        result = ap_manager.setup_ap("wlan0", "TestAP", "pass123", "10.0.0.1/24", "10.0.0.10,10.0.0.100")
+        assert result is True
+        mock_nmcli.assert_called_once()
+        mock_hostapd.assert_called_once()
+        mock_wpa.assert_called_once()
 
 
 class TestStopAP:
@@ -295,6 +287,7 @@ class TestStopAP:
         assert ap_manager._hostapd_pid is None
         mock_run.assert_has_calls([
             call(["sudo", "pkill", "-f", "hostapd.*wlan0"], capture_output=True),
+            call(["sudo", "pkill", "-f", "wpa_supplicant.*wlan0"], capture_output=True),
             call(["sudo", "pkill", "-f", "dnsmasq.*wlan0"], capture_output=True),
         ], any_order=True)
 

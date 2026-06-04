@@ -133,7 +133,19 @@ class IwScanner(IScanner):
             self._bring_up(mon)
             return mon
 
-        # 3. Перевести через airmon-ng
+        # 3. Предпочтительный fallback: iw set type monitor (не трогает NetworkManager)
+        print(f"[DEBUG] Trying iw set type monitor on {self._interface}")
+        subprocess.run(["sudo", "ip", "link", "set", self._interface, "down"], capture_output=True)
+        subprocess.run(["sudo", "iw", "dev", self._interface, "set", "type", "monitor"], capture_output=True)
+        subprocess.run(["sudo", "ip", "link", "set", self._interface, "up"], capture_output=True)
+        time.sleep(0.5)
+
+        mode = self._get_interface_mode(self._interface)
+        print(f"[DEBUG] After iw set type monitor, mode={mode}")
+        if mode == "monitor":
+            return self._interface
+
+        # 4. Крайняя мера: airmon-ng (может убить NetworkManager — потеря SSH!)
         print(f"[DEBUG] Trying airmon-ng start {self._interface}")
         subprocess.run(
             ["sudo", "airmon-ng", "start", self._interface],
@@ -145,17 +157,6 @@ class IwScanner(IScanner):
         print(f"[DEBUG] After airmon-ng, monitor interface: {mon}")
         if mon:
             return mon
-
-        # 4. Fallback: iw set type monitor
-        subprocess.run(["sudo", "ip", "link", "set", self._interface, "down"], capture_output=True)
-        subprocess.run(["sudo", "iw", "dev", self._interface, "set", "type", "monitor"], capture_output=True)
-        subprocess.run(["sudo", "ip", "link", "set", self._interface, "up"], capture_output=True)
-        time.sleep(0.5)
-
-        mode = self._get_interface_mode(self._interface)
-        print(f"[DEBUG] After iw set type monitor, mode={mode}")
-        if mode == "monitor":
-            return self._interface
 
         # 5. Emergency fallback: если интерфейс существует в sysfs, использовать напрямую
         if os.path.exists(f"/sys/class/net/{self._interface}"):

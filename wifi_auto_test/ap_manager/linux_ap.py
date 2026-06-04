@@ -14,16 +14,6 @@ class LinuxAPManager(IAPManager):
         self._con_name: str = ""
         self._hostapd_pid: int | None = None
 
-    def _supports_ap_via_nm(self, interface: str) -> bool:
-        """Проверяем, может ли устройство работать в AP mode через nmcli."""
-        result = subprocess.run(
-            ["sudo", "iw", interface, "info"],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            return False
-        return "AP/VLAN" in result.stdout
-
     def _setup_ap_nmcli(
         self,
         interface: str,
@@ -191,11 +181,113 @@ class LinuxAPManager(IAPManager):
     ) -> bool:
         self._interface = interface
 
-        if self._supports_ap_via_nm(interface):
-            return self._setup_ap_nmcli(interface, ssid, password)
-        else:
-            self._log(f"[!] Устройство не поддерживает AP через nmcli, используем hostapd")
-            return self._setup_ap_hostapd(interface, ssid, password, ip_cidr, dhcp_range)
+        # 1. Try nmcli first (works on many adapters via wpa_supplicant/wext)
+        if self._setup_ap_nmcli(interface, ssid, password):
+            return True
+
+        # 2. Fallback: hostapd
+        self._log(f"[!] nmcli failed, trying hostapd")
+        if self._setup_ap_hostapd(interface, ssid, password, ip_cidr, dhcp_range):
+            return True
+
+        # 3. Last resort: wpa_supplicant directly
+        self._log(f"[!] hostapd failed, trying wpa_supplicant")
+        if self._setup_ap_wpa_supplicant(interface, ssid, password, ip_cidr, dhcp_range):
+            return True
+
+        self._log(f"[!] All AP methods failed for {interface}")
+        return False
+
+    def _setup_ap_wpa_supplicant(
+        self,
+        interface: str,
+        ssid: str,
+        password: str,
+        ip_cidr: str,
+        dhcp_range: str,
+    ) -> bool:
+        """Last-resort AP setup via wpa_supplicant (works with r8188eu / wext)."""
+        self._log(f"[*] Настройка AP через wpa_supplicant на {interface}: {ssid}")
+
+        # Disconnect from NM
+        subprocess.run(
+            ["sudo", "nmcli", "device", "disconnect", interface],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["sudo", "nmcli", "device", "set", interface, "managed", "no"],
+            capture_output=True,
+        )
+
+        # Kill stale processes
+        subprocess.run(["sudo", "pkill", "-f", f"wpa_supplicant.*{interface}"], capture_output=True)
+        subprocess.run(["sudo", "pkill", "-f", f"dnsmasq.*{interface}"], capture_output=True)
+        time.sleep(0.3)
+
+        # Set up IP
+        ip, _ = ip_cidr.rsplit("/", 1)
+        subprocess.run(["sudo", "ip", "addr", "flush", "dev", interface], capture_output=True)
+        subprocess.run(["sudo", "ip", "addr", "add", ip_cidr, "dev", interface], capture_output=True)
+        subprocess.run(["sudo", "ip", "link", "set", "dev", interface, "up"], capture_output=True)
+
+        # Create wpa_supplicant config for AP
+        conf_path = "/tmp/wpa-supplicant-wifi-auto-test.conf"
+        with open(conf_path, "w") as f:
+            f.write(
+                "ctrl_interface=/var/run/wpa_supplicant\n"
+                "ctrl_interface_group=0\n"
+                "ap_scan=2\n"
+                "\n"
+                "network={\n"
+                f'    ssid="{ssid}"\n'
+                "    mode=2\n"
+                "    frequency=2437\n"
+                "    key_mgmt=WPA-PSK\n"
+                f'    psk="{password}"\n'
+                "    proto=RSN\n"
+                "    pairwise=CCMP\n"
+                "}\n"
+            )
+
+        # Start wpa_supplicant
+        log_path = "/tmp/wpa-supplicant-wifi-auto-test.log"
+        with open(log_path, "w") as logf:
+            proc = subprocess.Popen(
+                ["sudo", "wpa_supplicant", "-D", "wext", "-i", interface, "-c", conf_path],
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+            )
+        time.sleep(2)
+
+        if proc.poll() is not None:
+            with open(log_path, "r") as f:
+                err = f.read().strip()
+            self._log(f"[!] wpa_supplicant failed: {err[:500]}")
+            return False
+
+        self._hostapd_pid = proc.pid
+
+        # dnsmasq
+        dhcp_start, dhcp_end = dhcp_range.split(",", 1)
+        subprocess.run(
+            ["sudo", "dnsmasq",
+             f"--interface={interface}",
+             "--bind-interfaces",
+             f"--dhcp-range={dhcp_range}",
+             "--conf-file=/dev/null",
+             ],
+            capture_output=True,
+        )
+
+        # NAT
+        subprocess.run(
+            ["sudo", "iptables", "-t", "nat", "-A", "POSTROUTING",
+             "-o", "end0", "-j", "MASQUERADE"],
+            capture_output=True,
+        )
+
+        self._log(f"[+] AP {ssid} запущена через wpa_supplicant на {interface}")
+        return True
 
     def _setup_ap_airbase_ng(
         self,
@@ -297,6 +389,10 @@ class LinuxAPManager(IAPManager):
         if self._hostapd_pid:
             subprocess.run(
                 ["sudo", "pkill", "-f", f"hostapd.*{self._interface}"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["sudo", "pkill", "-f", f"wpa_supplicant.*{self._interface}"],
                 capture_output=True,
             )
             subprocess.run(
