@@ -30,22 +30,26 @@ class IwScanner(IScanner):
     def _find_interfaces(self) -> List[str]:
         result = []
         try:
-            for entry in os.listdir("/sys/class/net"):
-                if os.path.exists(f"/sys/class/net/{entry}/wireless"):
-                    result.append(entry)
-        except OSError:
+            # iw dev показывает и managed, и monitor интерфейсы
+            out = subprocess.run(
+                ["iw", "dev"], capture_output=True, text=True
+            ).stdout
+            for line in out.split("\n"):
+                if line.strip().startswith("Interface "):
+                    result.append(line.strip().split(" ")[1])
+        except Exception:
             pass
         return result
 
     def _get_interface_mode(self, iface: str) -> str:
         result = subprocess.run(
-            ["sudo", "iwconfig", iface],
+            ["sudo", "iw", "dev", iface, "info"],
             capture_output=True, text=True,
         )
         if result.returncode == 0:
             for line in result.stdout.split("\n"):
-                if "Mode:" in line:
-                    return line.split("Mode:")[1].split()[0].lower()
+                if "type" in line.lower():
+                    return line.strip().rsplit(" ", 1)[-1].lower()
         # sysfs fallback
         try:
             with open(f"/sys/class/net/{iface}/type", "r") as f:
@@ -62,14 +66,23 @@ class IwScanner(IScanner):
                 return iface
         return None
 
+    def _bring_up(self, iface: str) -> None:
+        subprocess.run(
+            ["sudo", "ip", "link", "set", iface, "up"],
+            capture_output=True,
+        )
+        time.sleep(0.3)
+
     def _ensure_monitor(self) -> Optional[str]:
         # 1. Исходный интерфейс уже monitor?
         if self._get_interface_mode(self._interface) == "monitor":
+            self._bring_up(self._interface)
             return self._interface
 
         # 2. Найти любой monitor
         mon = self._find_monitor_interface()
         if mon:
+            self._bring_up(mon)
             return mon
 
         # 3. Перевести через airmon-ng
@@ -140,12 +153,23 @@ class IwScanner(IScanner):
             print(f"[!] Нет интерфейса в monitor mode")
             return []
 
+        self._bring_up(iface)
+
         # Запускаем iw scan
         result = subprocess.run(
             ["sudo", "iw", "dev", iface, "scan"],
             capture_output=True, text=True,
             timeout=self._scan_interval,
         )
+        if result.returncode != 0:
+            err = result.stderr.strip()
+            if "network is down" in err.lower() or "-100" in err:
+                self._bring_up(iface)
+                result = subprocess.run(
+                    ["sudo", "iw", "dev", iface, "scan"],
+                    capture_output=True, text=True,
+                    timeout=self._scan_interval,
+                )
         if result.returncode != 0:
             print(f"[!] iw scan failed: {result.stderr[:200]}")
             return []

@@ -25,6 +25,13 @@ class LinuxAPManager(IAPManager):
         self._con_name = f"wifi-auto-test-{ssid.replace(' ', '-')[:20]}"
         self._log(f"[*] Настройка AP через nmcli на {interface}: {ssid}")
 
+        # Отключить интерфейс от текущего клиентского соединения NM
+        subprocess.run(
+            ["sudo", "nmcli", "device", "disconnect", interface],
+            capture_output=True,
+        )
+        time.sleep(0.5)
+
         # Удалить старое соединение
         subprocess.run(
             ["sudo", "nmcli", "connection", "delete", self._con_name],
@@ -52,9 +59,9 @@ class LinuxAPManager(IAPManager):
             self._log(f"[!] nmcli add failed: {result.stderr.strip()[:300]}")
             return False
 
-        # Активировать
+        # Активировать, явно указав устройство
         result = subprocess.run(
-            ["sudo", "nmcli", "connection", "up", self._con_name],
+            ["sudo", "nmcli", "connection", "up", self._con_name, "ifname", interface],
             capture_output=True, text=True,
         )
         if result.returncode != 0:
