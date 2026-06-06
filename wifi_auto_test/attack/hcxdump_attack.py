@@ -58,25 +58,38 @@ class HcxdumpAttack(IAttackEngine):
     def _supports_option(self, option: str) -> bool:
         return option in self._get_help_text()
 
-    def run(self, network: WiFiNetwork) -> TestResult:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_ssid = self._sanitize(network.ssid or "hidden")
-        filename = f"{timestamp}_{safe_ssid}_{network.bssid.replace(':', '')}.pcapng"
-        filepath = os.path.join(self._output_dir, filename)
+    def _build_command(self, network: WiFiNetwork, filepath: str) -> list[str]:
         channel = network.channel if network.channel > 0 else 1
-
+        supports_rds = self._supports_option("--rds")
+        # Newer hcxdumptool versions support the same channel suffix used in the
+        # verified manual command: -c 9a -w capture.pcapng --rds=4. Older Debian
+        # builds only accept a numeric channel and -o.
+        channel_arg = f"{channel}a" if supports_rds else str(channel)
         command = [
             "sudo",
             "hcxdumptool",
             "-i",
             self._interface,
             "-c",
-            str(channel),
+            channel_arg,
             self._get_output_option(),
             filepath,
         ]
-        if self._supports_option("--rds"):
+        if supports_rds:
             command.append("--rds=4")
+        elif self._supports_option("--filterlist_ap") and self._supports_option("--filtermode"):
+            # On old hcxdumptool builds, target the selected AP explicitly to avoid
+            # spending the whole timeout interacting with unrelated networks.
+            command.extend([f"--filterlist_ap={network.bssid}", "--filtermode=2"])
+        return command
+
+    def run(self, network: WiFiNetwork) -> TestResult:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_ssid = self._sanitize(network.ssid or "hidden")
+        filename = f"{timestamp}_{safe_ssid}_{network.bssid.replace(':', '')}.pcapng"
+        filepath = os.path.join(self._output_dir, filename)
+
+        command = self._build_command(network, filepath)
 
         status = TestStatus.TIMEOUT
         log_lines: list[str] = []
@@ -93,6 +106,7 @@ class HcxdumpAttack(IAttackEngine):
             ):
                 status = TestStatus.SUCCESS
                 self._log(f"[+] Успех для {network.ssid}: {line.strip()}")
+                self._runner.terminate()
             elif parsed == HcxdumpStatus.ACTIVITY:
                 self._log(f"[*] Активность для {network.ssid}: {line.strip()}")
             elif source == "stderr":

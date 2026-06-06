@@ -201,6 +201,29 @@ class TestHcxdumpAttack:
         assert "-w" not in command
         assert "--rds=4" not in command
 
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
+    @patch("wifi_auto_test.attack.hcxdump_attack.subprocess.run")
+    def test_run_uses_manual_hcxdumptool_options_when_supported(self, mock_help, mock_exists, tmp_path):
+        runner = MagicMock()
+        runner.run.return_value = 1
+        mock_help.return_value = MagicMock(stdout="-w <dump file>\n--rds=<digit>", stderr="")
+        mock_exists.return_value = False
+        attack = HcxdumpAttack(
+            interface="wlan1mon",
+            output_dir=str(tmp_path),
+            timeout=60,
+            process_runner=runner,
+        )
+        net = WiFiNetwork(bssid="EC:4C:4D:AB:6F:C8", ssid="RT-WiFi-6FC7", channel=9, signal_dbm=-41, security="WPA2")
+
+        attack.run(net)
+
+        command = runner.run.call_args.kwargs["command"]
+        assert command[command.index("-c") + 1] == "9a"
+        assert "-w" in command
+        assert "-o" not in command
+        assert "--rds=4" in command
+
 
 class TestHybridAttack:
     @patch("wifi_auto_test.attack.hybrid_attack.shutil.which")

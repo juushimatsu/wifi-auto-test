@@ -26,9 +26,21 @@ class AptInstaller(IDependencyInstaller):
 
     _BINARIES = ["wash", "hcxdumptool", "hostapd", "dnsmasq", "iptables", "airmon-ng", "iw", "iwconfig", "rfkill"]
 
+    def _hcxdumptool_supports_manual_mode(self) -> bool:
+        """Return True when hcxdumptool supports the known-good manual command."""
+        if not shutil.which("hcxdumptool"):
+            return False
+        result = subprocess.run(
+            ["hcxdumptool", "-h"],
+            capture_output=True,
+            text=True,
+        )
+        help_text = f"{result.stdout}\n{result.stderr}"
+        return "-w <" in help_text and "--rds" in help_text
+
     def _build_hcxtools(self) -> bool:
-        """Fallback: build hcxdumptool from source if apt package lacks it."""
-        print("[*] hcxdumptool not found after apt install, building from source...")
+        """Fallback: build hcxdumptool from source if apt package lacks compatible one."""
+        print("[*] hcxdumptool missing or too old, building from source...")
         cmds = [
             ["sudo", "rm", "-rf", "/tmp/hcxdumptool-build"],
             ["sudo", "git", "clone", "https://github.com/ZerBea/hcxdumptool.git", "/tmp/hcxdumptool-build"],
@@ -41,7 +53,7 @@ class AptInstaller(IDependencyInstaller):
             if result.returncode != 0:
                 print(f"[!] failed: {result.stderr[-300:] if result.stderr else result.stdout[-300:]}")
                 return False
-        print("[+] hcxtools built from source")
+        print("[+] hcxdumptool built from source")
         return True
 
     def install_all(self) -> bool:
@@ -81,8 +93,8 @@ class AptInstaller(IDependencyInstaller):
                 capture_output=True,
                 text=True,
             )
-            if not shutil.which("hcxdumptool") and not self._build_hcxtools():
-                print("[!] WARNING: hcxdumptool still not available. PMKID attacks will fail.")
+        if not self._hcxdumptool_supports_manual_mode() and not self._build_hcxtools():
+            print("[!] WARNING: compatible hcxdumptool still not available. Handshake attacks can fail.")
 
         return True
 
