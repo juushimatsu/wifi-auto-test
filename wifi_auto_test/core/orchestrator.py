@@ -46,6 +46,14 @@ class Orchestrator:
         self._state.paused = True
         self._log("[*] Оркестратор остановлен (пауза после текущей сети)")
 
+    def shutdown(self) -> None:
+        self._state.paused = True
+        self._stop_event.set()
+        terminate = getattr(self._attack, "terminate", None)
+        if terminate:
+            terminate()
+        self._log("[*] Оркестратор завершает работу")
+
     def restart(self) -> None:
         self._state.paused = False
         if not self._thread or not self._thread.is_alive():

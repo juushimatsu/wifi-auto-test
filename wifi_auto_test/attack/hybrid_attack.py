@@ -20,3 +20,9 @@ class HybridAttack(IAttackEngine):
         if self._has_hcxdump:
             return self._hcxdump.run(network)
         return self._airodump.run(network)
+
+    def terminate(self) -> None:
+        for attack in (self._hcxdump, self._airodump):
+            terminate = getattr(attack, "terminate", None)
+            if terminate:
+                terminate()

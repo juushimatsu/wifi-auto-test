@@ -137,11 +137,18 @@ def main():
         ws_manager=ws_manager,
     )
 
+    shutdown_in_progress = False
+
     def on_signal(signum, frame):
+        nonlocal shutdown_in_progress
+        if shutdown_in_progress:
+            os._exit(1)
+        shutdown_in_progress = True
         logger.info("Received shutdown signal")
+        orchestrator.shutdown()
         if ap_manager:
             ap_manager.stop_ap()
-        sys.exit(0)
+        os._exit(0)
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)

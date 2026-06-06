@@ -82,7 +82,7 @@ class HcxdumpAttack(IAttackEngine):
         log_lines: list[str] = []
         pcap_created = False
 
-        def _on_stdout(line: str) -> None:
+        def _handle_output(line: str, source: str) -> None:
             nonlocal status
             log_lines.append(line)
             parsed = self._parser.parse(line)
@@ -95,10 +95,14 @@ class HcxdumpAttack(IAttackEngine):
                 self._log(f"[+] Успех для {network.ssid}: {line.strip()}")
             elif parsed == HcxdumpStatus.ACTIVITY:
                 self._log(f"[*] Активность для {network.ssid}: {line.strip()}")
+            elif source == "stderr":
+                self._log(f"[!] stderr {network.ssid}: {line.strip()}")
+
+        def _on_stdout(line: str) -> None:
+            _handle_output(line, "stdout")
 
         def _on_stderr(line: str) -> None:
-            log_lines.append(line)
-            self._log(f"[!] stderr {network.ssid}: {line.strip()}")
+            _handle_output(line, "stderr")
 
         self._log(f"[*] Запуск hcxdumptool на {network.ssid} (ch {network.channel})")
         rc = self._runner.run(
@@ -129,3 +133,6 @@ class HcxdumpAttack(IAttackEngine):
             captured_frames="HCXDUMP_HANDSHAKE" if status == TestStatus.SUCCESS else None,
             log_excerpt="\n".join(log_lines[-50:]),
         )
+
+    def terminate(self) -> None:
+        self._runner.terminate()

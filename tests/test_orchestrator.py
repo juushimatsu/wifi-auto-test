@@ -43,6 +43,12 @@ class TestStartStopRestart:
         orchestrator._stop_event.set()
         orchestrator._thread.join(timeout=2)
 
+    def test_shutdown_terminates_current_attack(self, orchestrator):
+        orchestrator.shutdown()
+        assert orchestrator.state.paused is True
+        assert orchestrator._stop_event.is_set()
+        orchestrator._attack.terminate.assert_called_once()
+
     def test_restart_when_running(self, orchestrator):
         orchestrator.start()
         orchestrator.stop()

@@ -154,6 +154,30 @@ class TestHcxdumpAttack:
         assert result.captured_frames == "HCXDUMP_HANDSHAKE"
         assert result.pcap_file is not None
 
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.getsize")
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
+    def test_run_success_on_m12rogue_stderr_output(self, mock_exists, mock_getsize, tmp_path):
+        runner = MagicMock()
+
+        def fake_run(command, timeout, on_stdout=None, on_stderr=None, cwd=None):
+            on_stderr("19:40:13 M12ROGUE ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7")
+            return -1
+
+        runner.run.side_effect = fake_run
+        mock_exists.return_value = True
+        mock_getsize.return_value = 128
+        attack = HcxdumpAttack(
+            interface="wlan0mon",
+            output_dir=str(tmp_path),
+            timeout=60,
+            process_runner=runner,
+        )
+        net = WiFiNetwork(bssid="EC:4C:4D:AB:6F:C8", ssid="RT-WiFi-6FC7", channel=9, signal_dbm=-41, security="WPA2")
+
+        result = attack.run(net)
+
+        assert result.status == TestStatus.SUCCESS
+
     @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
     @patch("wifi_auto_test.attack.hcxdump_attack.subprocess.run")
     def test_run_uses_legacy_hcxdumptool_options(self, mock_help, mock_exists, tmp_path):
@@ -202,3 +226,15 @@ class TestHybridAttack:
         hybrid.run(net)
         airodump.run.assert_called_once_with(net)
         hcxdump.run.assert_not_called()
+
+    @patch("wifi_auto_test.attack.hybrid_attack.shutil.which")
+    def test_terminate_stops_attacks(self, mock_which):
+        mock_which.return_value = "/usr/bin/hcxdumptool"
+        hcxdump = MagicMock()
+        airodump = MagicMock()
+        hybrid = HybridAttack(hcxdump=hcxdump, airodump=airodump)
+
+        hybrid.terminate()
+
+        hcxdump.terminate.assert_called_once()
+        airodump.terminate.assert_called_once()
