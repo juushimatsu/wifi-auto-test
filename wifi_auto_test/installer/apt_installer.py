@@ -27,13 +27,13 @@ class AptInstaller(IDependencyInstaller):
     _BINARIES = ["wash", "hcxdumptool", "hostapd", "dnsmasq", "iptables", "airmon-ng", "iw", "iwconfig", "rfkill"]
 
     def _build_hcxtools(self) -> bool:
-        """Fallback: build hcxtools from source if apt package lacks hcxdumptool."""
+        """Fallback: build hcxdumptool from source if apt package lacks it."""
         print("[*] hcxdumptool not found after apt install, building from source...")
         cmds = [
-            ["sudo", "rm", "-rf", "/tmp/hcxtools-build"],
-            ["sudo", "git", "clone", "https://github.com/zerbea/hcxtools.git", "/tmp/hcxtools-build"],
-            ["sudo", "bash", "-c", "cd /tmp/hcxtools-build && make"],
-            ["sudo", "bash", "-c", "cd /tmp/hcxtools-build && make install"],
+            ["sudo", "rm", "-rf", "/tmp/hcxdumptool-build"],
+            ["sudo", "git", "clone", "https://github.com/ZerBea/hcxdumptool.git", "/tmp/hcxdumptool-build"],
+            ["sudo", "bash", "-c", "cd /tmp/hcxdumptool-build && make"],
+            ["sudo", "bash", "-c", "cd /tmp/hcxdumptool-build && make install"],
         ]
         for cmd in cmds:
             print(f"[*] {' '.join(cmd[:8])}...")
@@ -75,7 +75,13 @@ class AptInstaller(IDependencyInstaller):
         # Verify critical binaries
         missing = [b for b in self._BINARIES if not shutil.which(b)]
         if "hcxdumptool" in missing:
-            if not self._build_hcxtools():
+            print("[*] trying apt-get install hcxdumptool...")
+            subprocess.run(
+                ["sudo", "apt-get", "install", "-y", "hcxdumptool"],
+                capture_output=True,
+                text=True,
+            )
+            if not shutil.which("hcxdumptool") and not self._build_hcxtools():
                 print("[!] WARNING: hcxdumptool still not available. PMKID attacks will fail.")
 
         return True

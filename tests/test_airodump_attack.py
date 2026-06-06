@@ -3,7 +3,9 @@ from unittest.mock import MagicMock, patch, call
 import pytest
 
 from wifi_auto_test.attack.airodump_attack import AirodumpAttack
+from wifi_auto_test.attack.hcxdump_attack import HcxdumpAttack
 from wifi_auto_test.attack.hybrid_attack import HybridAttack
+from wifi_auto_test.attack.output_parser import HcxdumpOutputParser, HcxdumpStatus
 from wifi_auto_test.core.models import WiFiNetwork, TestStatus
 
 
@@ -113,6 +115,44 @@ class TestAirodumpAttack:
         airodump_call = mock_popen.call_args[0][0]
         assert "-c" in airodump_call
         assert airodump_call[airodump_call.index("-c") + 1] == "1"
+
+
+class TestHcxdumpOutputParser:
+    @pytest.mark.parametrize("line", [
+        "19:40:13 M12ROGUE ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7",
+        "19:40:13 M12      ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7",
+        "19:40:13 M1M2     ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7",
+    ])
+    def test_m12_lines_are_handshake_success(self, line):
+        assert HcxdumpOutputParser().parse(line) == HcxdumpStatus.M1M2_FOUND
+
+
+class TestHcxdumpAttack:
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.getsize")
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
+    def test_run_success_on_m12rogue_output(self, mock_exists, mock_getsize, tmp_path):
+        runner = MagicMock()
+
+        def fake_run(command, timeout, on_stdout=None, on_stderr=None, cwd=None):
+            on_stdout("19:40:13 M12ROGUE ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7")
+            return -1
+
+        runner.run.side_effect = fake_run
+        mock_exists.return_value = True
+        mock_getsize.return_value = 128
+        attack = HcxdumpAttack(
+            interface="wlan0mon",
+            output_dir=str(tmp_path),
+            timeout=60,
+            process_runner=runner,
+        )
+        net = WiFiNetwork(bssid="EC:4C:4D:AB:6F:C8", ssid="RT-WiFi-6FC7", channel=9, signal_dbm=-41, security="WPA2")
+
+        result = attack.run(net)
+
+        assert result.status == TestStatus.SUCCESS
+        assert result.captured_frames == "HCXDUMP_HANDSHAKE"
+        assert result.pcap_file is not None
 
 
 class TestHybridAttack:

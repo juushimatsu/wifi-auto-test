@@ -125,7 +125,7 @@ class LinuxAPManager(IAPManager):
             log_path = f"/tmp/hostapd-wifi-auto-test-{driver}.log"
             with open(log_path, "w") as logf:
                 proc = subprocess.Popen(
-                    ["sudo", "hostapd", "-B", conf_path],
+                    ["sudo", "hostapd", conf_path],
                     stdout=logf,
                     stderr=subprocess.STDOUT,
                 )
@@ -137,13 +137,13 @@ class LinuxAPManager(IAPManager):
                 return False, None
             return True, proc.pid
 
-        for drv in ("nl80211", "wext"):
+        for drv in ("nl80211", "rtl871xdrv"):
             ok, pid = _try_hostapd(drv)
             if ok and pid:
                 self._hostapd_pid = pid
                 break
         else:
-            # Fallback: airbase-ng для адаптеров без nl80211/wext (например Realtek USB)
+            # Fallback: airbase-ng для адаптеров без nl80211/rtl871xdrv (например Realtek USB)
             if self._setup_ap_airbase_ng(interface, ssid, ip_cidr, dhcp_range):
                 return True
             self._log("[!] hostapd не запустился ни с одним драйвером, airbase-ng тоже не сработал")
@@ -225,7 +225,6 @@ class LinuxAPManager(IAPManager):
         time.sleep(0.3)
 
         # Set up IP
-        ip, _ = ip_cidr.rsplit("/", 1)
         subprocess.run(["sudo", "ip", "addr", "flush", "dev", interface], capture_output=True)
         subprocess.run(["sudo", "ip", "addr", "add", ip_cidr, "dev", interface], capture_output=True)
         subprocess.run(["sudo", "ip", "link", "set", "dev", interface, "up"], capture_output=True)
@@ -286,7 +285,8 @@ class LinuxAPManager(IAPManager):
             capture_output=True,
         )
 
-        # Verify AP is actually running (check iw dev info for type AP)
+        # Verify AP is actually running. IP assignment alone is not enough: on r8188eu
+        # wpa_supplicant may stay in managed mode while the interface has the AP IP.
         for _ in range(10):
             result = subprocess.run(
                 ["sudo", "iw", "dev", interface, "info"],
@@ -295,17 +295,17 @@ class LinuxAPManager(IAPManager):
             if result.returncode == 0 and ("type AP" in result.stdout or "type ap" in result.stdout):
                 self._log(f"[+] AP {ssid} запущена через wpa_supplicant на {interface} (verified AP mode)")
                 return True
-            result = subprocess.run(
-                ["sudo", "ip", "addr", "show", "dev", interface],
-                capture_output=True, text=True,
-            )
-            if result.returncode == 0 and ip in result.stdout:
-                self._log(f"[+] AP {ssid} запущена через wpa_supplicant на {interface} (verified IP)")
-                return True
             time.sleep(0.5)
 
-        self._log(f"[!] wpa_supplicant стартовал но AP не подтверждена, проверь лог: {log_path}")
-        return True
+        self._log(f"[!] wpa_supplicant стартовал, но AP mode не подтвержден, проверь лог: {log_path}")
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=1)
+        subprocess.run(["sudo", "pkill", "-f", f"dnsmasq.*{interface}"], capture_output=True)
+        return False
 
     def _setup_ap_airbase_ng(
         self,

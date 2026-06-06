@@ -57,7 +57,11 @@ class HcxdumpAttack(IAttackEngine):
             nonlocal status
             log_lines.append(line)
             parsed = self._parser.parse(line)
-            if parsed in (HcxdumpStatus.PMKID_FOUND, HcxdumpStatus.M1M4_FOUND):
+            if parsed in (
+                HcxdumpStatus.PMKID_FOUND,
+                HcxdumpStatus.M1M2_FOUND,
+                HcxdumpStatus.M1M4_FOUND,
+            ):
                 status = TestStatus.SUCCESS
                 self._log(f"[+] Успех для {network.ssid}: {line.strip()}")
             elif parsed == HcxdumpStatus.ACTIVITY:
@@ -93,6 +97,6 @@ class HcxdumpAttack(IAttackEngine):
             network=network,
             status=status,
             pcap_file=filepath if pcap_created else None,
-            captured_frames="M1M2E2" if status == TestStatus.SUCCESS else None,
+            captured_frames="HCXDUMP_HANDSHAKE" if status == TestStatus.SUCCESS else None,
             log_excerpt="\n".join(log_lines[-50:]),
         )
