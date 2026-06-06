@@ -12,7 +12,7 @@ class HcxdumpStatus(Enum):
 
 class HcxdumpOutputParser:
     _PMKID_PATTERN = re.compile(r"M1M2E2", re.IGNORECASE)
-    _M1M2_PATTERN = re.compile(r"\b(?:M1M2|M12ROGUE|M12)\b", re.IGNORECASE)
+    _M1M2_PATTERN = re.compile(r"\b(?:M1M2ROGUE|M1M2|M12ROGUE|M12)\b", re.IGNORECASE)
     _M1M4_PATTERN = re.compile(r"M1M4", re.IGNORECASE)
 
     def parse(self, line: str) -> HcxdumpStatus:

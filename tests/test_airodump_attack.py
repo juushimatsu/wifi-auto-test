@@ -122,6 +122,7 @@ class TestHcxdumpOutputParser:
         "19:40:13 M12ROGUE ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7",
         "19:40:13 M12      ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7",
         "19:40:13 M1M2     ec4c4dab6fc8 ecab921a16f9 RT-WiFi-6FC7",
+        "17:44:28 2452/9 d03745eea49e ec4c4dab6fc8 RT-WiFi-6FC7 [EAPOL:M1M2ROGUE EAPOLTIME:211]",
     ])
     def test_m12_lines_are_handshake_success(self, line):
         assert HcxdumpOutputParser().parse(line) == HcxdumpStatus.M1M2_FOUND
@@ -183,7 +184,7 @@ class TestHcxdumpAttack:
     def test_run_uses_legacy_hcxdumptool_options(self, mock_help, mock_exists, tmp_path):
         runner = MagicMock()
         runner.run.return_value = 1
-        mock_help.return_value = MagicMock(stdout="-o <dump file> : output file", stderr="")
+        mock_help.return_value = MagicMock(stdout="hcxdumptool 6.2.6\n-o <dump file> : output file\n--enable_status=<digit>", stderr="")
         mock_exists.return_value = False
         attack = HcxdumpAttack(
             interface="wlan0mon",
@@ -200,6 +201,7 @@ class TestHcxdumpAttack:
         assert "-o" in command
         assert "-w" not in command
         assert "--rds=4" not in command
+        assert "--enable_status=1" in command
 
     @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
     @patch("wifi_auto_test.attack.hcxdump_attack.subprocess.run")

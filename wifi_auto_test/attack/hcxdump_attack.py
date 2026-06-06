@@ -28,6 +28,7 @@ class HcxdumpAttack(IAttackEngine):
         self._parser = HcxdumpOutputParser()
         self._log: Callable[[str], None] = logger or (lambda x: None)
         self._help_text_cache: str | None = None
+        self._version_cache: tuple[int, int, int] | None = None
         self._output_option_cache: str | None = None
         os.makedirs(self._output_dir, exist_ok=True)
 
@@ -49,6 +50,34 @@ class HcxdumpAttack(IAttackEngine):
             self._help_text_cache = ""
         return self._help_text_cache
 
+    def _get_version(self) -> tuple[int, int, int] | None:
+        if self._version_cache is not None:
+            return self._version_cache
+
+        texts = [self._get_help_text()]
+        for option in ("--version", "-v"):
+            try:
+                result = subprocess.run(
+                    ["hcxdumptool", option],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                texts.append(f"{result.stdout}\n{result.stderr}")
+            except Exception:
+                pass
+
+        for text in texts:
+            match = re.search(r"hcxdumptool\s+(\d+)\.(\d+)(?:\.(\d+))?", text, re.IGNORECASE)
+            if match:
+                self._version_cache = (
+                    int(match.group(1)),
+                    int(match.group(2)),
+                    int(match.group(3) or 0),
+                )
+                return self._version_cache
+        return None
+
     def _get_output_option(self) -> str:
         if self._output_option_cache:
             return self._output_option_cache
@@ -60,10 +89,12 @@ class HcxdumpAttack(IAttackEngine):
 
     def _build_command(self, network: WiFiNetwork, filepath: str) -> list[str]:
         channel = network.channel if network.channel > 0 else 1
-        supports_rds = self._supports_option("--rds")
-        # Newer hcxdumptool versions support the same channel suffix used in the
-        # verified manual command: -c 9a -w capture.pcapng --rds=4. Older Debian
-        # builds only accept a numeric channel and -o.
+        version = self._get_version()
+        is_legacy_v6 = version is not None and version[0] < 7
+        supports_rds = self._supports_option("--rds") and not is_legacy_v6
+        # hcxdumptool 7.x accepts the channel suffix used by the current working
+        # test command. Version 6.x, including 6.2.6 on Orange Pi, requires a
+        # plain numeric channel and works with --enable_status=1.
         channel_arg = f"{channel}a" if supports_rds else str(channel)
         command = [
             "sudo",
@@ -77,10 +108,8 @@ class HcxdumpAttack(IAttackEngine):
         ]
         if supports_rds:
             command.append("--rds=4")
-        elif self._supports_option("--filterlist_ap") and self._supports_option("--filtermode"):
-            # On old hcxdumptool builds, target the selected AP explicitly to avoid
-            # spending the whole timeout interacting with unrelated networks.
-            command.extend([f"--filterlist_ap={network.bssid}", "--filtermode=2"])
+        elif self._supports_option("--enable_status"):
+            command.append("--enable_status=1")
         return command
 
     def run(self, network: WiFiNetwork) -> TestResult:
