@@ -179,6 +179,28 @@ class TestHcxdumpAttack:
 
         assert result.status == TestStatus.SUCCESS
 
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.remove")
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.getsize")
+    @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
+    def test_run_removes_timeout_capture(self, mock_exists, mock_getsize, mock_remove, tmp_path):
+        runner = MagicMock()
+        runner.run.return_value = -1
+        mock_exists.return_value = True
+        mock_getsize.return_value = 128
+        attack = HcxdumpAttack(
+            interface="wlan0mon",
+            output_dir=str(tmp_path),
+            timeout=60,
+            process_runner=runner,
+        )
+        net = WiFiNetwork(bssid="EC:4C:4D:AB:6F:C8", ssid="RT-WiFi-6FC7", channel=9, signal_dbm=-41, security="WPA2")
+
+        result = attack.run(net)
+
+        assert result.status == TestStatus.TIMEOUT
+        assert result.pcap_file is None
+        mock_remove.assert_called_once()
+
     @patch("wifi_auto_test.attack.hcxdump_attack.os.path.exists")
     @patch("wifi_auto_test.attack.hcxdump_attack.subprocess.run")
     def test_run_uses_legacy_hcxdumptool_options(self, mock_help, mock_exists, tmp_path):

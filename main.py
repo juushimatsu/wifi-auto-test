@@ -6,6 +6,7 @@ Entry point. DI container initialization + web server + orchestrator.
 
 import argparse
 import os
+import shutil
 import signal
 import sys
 
@@ -32,6 +33,27 @@ def detect_installer():
                 from wifi_auto_test.installer import AptInstaller
                 return AptInstaller()
     return None
+
+
+def reset_runtime_state(output_dir: str, db_path: str = "wifi_auto_test.db", logger=None) -> None:
+    log = logger or (lambda x: None)
+    os.makedirs(output_dir, exist_ok=True)
+    for name in os.listdir(output_dir):
+        path = os.path.join(output_dir, name)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except OSError as e:
+            log(f"[!] Не удалось удалить {path}: {e}")
+
+    for path in (db_path, f"{db_path}-wal", f"{db_path}-shm"):
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                log(f"[!] Не удалось удалить {path}: {e}")
 
 
 def main():
@@ -65,6 +87,8 @@ def main():
 
     # 3. Wire them together after both exist
     logger.set_ws_manager(ws_manager)
+
+    reset_runtime_state(config.get("output_dir"), logger=logger.info)
 
     if args.install_deps:
         installer = detect_installer()

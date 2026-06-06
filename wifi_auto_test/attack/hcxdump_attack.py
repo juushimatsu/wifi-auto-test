@@ -162,7 +162,16 @@ class HcxdumpAttack(IAttackEngine):
 
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             pcap_created = True
-        else:
+
+        if status != TestStatus.SUCCESS:
+            if pcap_created:
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    pass
+            pcap_created = False
+            filepath = None
+        elif not pcap_created:
             filepath = None
 
         if status == TestStatus.SUCCESS and not pcap_created:
