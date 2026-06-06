@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 import time
 from datetime import datetime
 from typing import Callable, Optional
@@ -26,16 +27,43 @@ class HcxdumpAttack(IAttackEngine):
         self._runner = process_runner
         self._parser = HcxdumpOutputParser()
         self._log: Callable[[str], None] = logger or (lambda x: None)
+        self._help_text_cache: str | None = None
+        self._output_option_cache: str | None = None
         os.makedirs(self._output_dir, exist_ok=True)
 
     def _sanitize(self, s: str) -> str:
         return re.sub(r"[^\w\-]", "_", s)
+
+    def _get_help_text(self) -> str:
+        if self._help_text_cache is not None:
+            return self._help_text_cache
+        try:
+            result = subprocess.run(
+                ["hcxdumptool", "-h"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            self._help_text_cache = f"{result.stdout}\n{result.stderr}"
+        except Exception:
+            self._help_text_cache = ""
+        return self._help_text_cache
+
+    def _get_output_option(self) -> str:
+        if self._output_option_cache:
+            return self._output_option_cache
+        self._output_option_cache = "-w" if "-w <" in self._get_help_text() else "-o"
+        return self._output_option_cache
+
+    def _supports_option(self, option: str) -> bool:
+        return option in self._get_help_text()
 
     def run(self, network: WiFiNetwork) -> TestResult:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_ssid = self._sanitize(network.ssid or "hidden")
         filename = f"{timestamp}_{safe_ssid}_{network.bssid.replace(':', '')}.pcapng"
         filepath = os.path.join(self._output_dir, filename)
+        channel = network.channel if network.channel > 0 else 1
 
         command = [
             "sudo",
@@ -43,11 +71,12 @@ class HcxdumpAttack(IAttackEngine):
             "-i",
             self._interface,
             "-c",
-            f"{network.channel}a",
-            "-w",
+            str(channel),
+            self._get_output_option(),
             filepath,
-            "--rds=4",
         ]
+        if self._supports_option("--rds"):
+            command.append("--rds=4")
 
         status = TestStatus.TIMEOUT
         log_lines: list[str] = []

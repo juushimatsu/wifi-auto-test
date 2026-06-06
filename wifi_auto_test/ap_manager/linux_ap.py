@@ -297,6 +297,15 @@ class LinuxAPManager(IAPManager):
                 return True
             time.sleep(0.5)
 
+        try:
+            with open(log_path, "r") as f:
+                err = f.read().strip()
+            if "does not support AP mode" in err:
+                self._log(f"[!] {interface}: драйвер не поддерживает AP mode")
+            elif err:
+                self._log(f"[!] wpa_supplicant log: {err[-500:]}")
+        except OSError:
+            pass
         self._log(f"[!] wpa_supplicant стартовал, но AP mode не подтвержден, проверь лог: {log_path}")
         proc.terminate()
         try:

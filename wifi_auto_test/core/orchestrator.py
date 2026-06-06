@@ -83,9 +83,17 @@ class Orchestrator:
             time.sleep(5)
             return
 
-        # Фильтрация успешных
+        # Фильтрация успешных, скрытых сетей и собственной AP веб-панели
         success_bssids = set(self._repo.get_successful_bssids())
-        pending = [n for n in networks if n.bssid not in success_bssids]
+        ap_ssid = self._config.get("ap_ssid")
+        if not isinstance(ap_ssid, str):
+            ap_ssid = ""
+        pending = [
+            n for n in networks
+            if n.bssid not in success_bssids
+            and (n.ssid or "").strip()
+            and n.ssid != ap_ssid
+        ]
 
         # Сортировка по сигналу (от наименьшего отрицательного к наибольшему)
         pending.sort(key=lambda n: n.signal_dbm, reverse=True)

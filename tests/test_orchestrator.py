@@ -98,6 +98,20 @@ class TestRunCycle:
         # Net1 is filtered out, only Net2 and Net3 attacked
         assert orchestrator._attack.run.call_count == 2
 
+    def test_cycle_filters_hidden_and_own_ap(self, orchestrator):
+        orchestrator._config.get.return_value = "wifitest"
+        networks = [
+            WiFiNetwork(bssid="AA:BB:CC:DD:EE:01", ssid="", channel=1, signal_dbm=-30, security="WPA2"),
+            WiFiNetwork(bssid="AA:BB:CC:DD:EE:02", ssid="wifitest", channel=6, signal_dbm=-40, security="WPA2"),
+            WiFiNetwork(bssid="AA:BB:CC:DD:EE:03", ssid="Target", channel=9, signal_dbm=-50, security="WPA2"),
+        ]
+        orchestrator._scanner.scan.return_value = networks
+        orchestrator._attack.run.return_value = TestResult(network=networks[2], status=TestStatus.SUCCESS)
+
+        orchestrator._run_cycle()
+
+        orchestrator._attack.run.assert_called_once_with(networks[2])
+
     def test_cycle_sorts_by_signal(self, orchestrator, sample_networks):
         orchestrator._scanner.scan.return_value = sample_networks
         orchestrator._attack.run.return_value = TestResult(
